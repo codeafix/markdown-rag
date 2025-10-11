@@ -1,0 +1,69 @@
+services:
+  ollama:
+    image: ollama/ollama:latest
+    container_name: ollama
+    restart: unless-stopped
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_models:/root/.ollama
+    # More reliable healthcheck under Podman
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 10s
+      timeout: 5s
+      start_period: 25s
+      retries: 30
+
+  rag:
+    build:
+      context: ./app
+    container_name: obsidian-rag
+    depends_on:
+      ollama:
+        condition: service_healthy
+    environment:
+      TIMEZONE: Europe/London
+      TZ: Europe/London
+      OLLAMA_BASE_URL: http://ollama:11434
+      # To use host Ollama instead, override with:
+      # OLLAMA_BASE_URL: http://host.containers.internal:11434
+      GENERATOR_MODEL: ibm/granite4:tiny-h
+      EMBED_MODEL: nomic-embed-text
+      VAULT_PATH: /vault
+      INDEX_PATH: /index/chroma
+      SYSTEM_PROMPT_FILE: /app/system_prompt.txt
+      CHUNK_SIZE: "900"
+      CHUNK_OVERLAP: "150"
+      TOP_K: "5"
+      TEMPERATURE: "0.0"
+      NUM_CTX: "8192"
+      WATCH_DEBOUNCE_SECS: "3"
+      NUM_PREDICTT: "256"
+      ANONYMIZED_TELEMETRY: "False"
+      CHROMA_TELEMETRY: "False"
+    volumes:
+      - ${HOST_VAULT_PATH}:/vault:ro
+      - chroma_index:/index
+    ports:
+      - "8000:8000"
+    command: ["/bin/bash", "/app/run.sh"]
+
+  watcher:
+    build:
+      context: ./app
+    container_name: obsidian-rag-watcher
+    depends_on:
+      rag:
+        condition: service_started
+    environment:
+      WATCH_PATH: /vault
+      RAG_URL: http://rag:8000/reindex
+      WATCH_DEBOUNCE_SECS: "3"
+    volumes:
+      - ${HOST_VAULT_PATH}:/vault:ro
+    command: ["python", "watcher.py"]
+
+volumes:
+  ollama_models:
+  chroma_index:
