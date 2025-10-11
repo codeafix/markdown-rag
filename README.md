@@ -1,13 +1,13 @@
-# Obsidian RAG (Podman)
+# Markdown RAG
 
-A containerised RAG stack for your Obsidian vault:
+A containerised RAG stack for your Markdown vault:
 - Indexes Markdown with **Markdown-header splitting** first, then **sentence-aware fallback**, and finally **char-based** fallback.
 - Persists embeddings in **Chroma**.
 - Uses **Ollama** for both generator (**Granite 4.0 Tiny-H**) and embedder (**nomic-embed-text**).
 - **Watchdog** sidecar auto-reindexes on vault changes (debounced).
 
 ## Quick start
-1. Edit `.env` and set `HOST_VAULT_PATH` to your Obsidian vault absolute path.
+1. Edit `.env` and set `HOST_VAULT_PATH` to your Markdown vault absolute path.
 2. `make up`
 3. `make pull` (first run to cache models)
 4. Ask: `make ask`

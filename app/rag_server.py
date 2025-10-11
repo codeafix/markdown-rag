@@ -31,9 +31,33 @@ MONTHS = {
 }
 
 RELATIVE_RE = re.compile(
-    r"\b(today|yesterday|this week|last week|this month|last month|this year|last year)\b",
+    r"\b(today|yesterday|this week|last week|this month|last month|this year|last year|recent)\b",
     re.IGNORECASE,
 )
+
+# Quantified relative windows
+LAST_N_RE = re.compile(
+    r"\b(?:last|past|previous)\s+(?P<n>\d{1,3})\s+(?P<u>day|days|week|weeks|month|months|year|years)\b",
+    re.IGNORECASE,
+)
+IN_THE_LAST_N_RE = re.compile(
+    r"\bin\s+the\s+last\s+(?P<n>\d{1,3})\s+(?P<u>day|days|week|weeks|month|months|year|years)\b",
+    re.IGNORECASE,
+)
+NUMBER_WORDS = {
+    'one':1,'two':2,'three':3,'four':4,'five':5,'six':6,'seven':7,'eight':8,'nine':9,'ten':10,
+    'eleven':11,'twelve':12,'thirteen':13,'fourteen':14,'fifteen':15,'sixteen':16,'seventeen':17,
+    'eighteen':18,'nineteen':19,'twenty':20
+}
+LAST_WORD_N_RE = re.compile(
+    r"\b(?:last|past|previous)\s+(?P<nw>" + '|'.join(NUMBER_WORDS.keys()) + r")\s+(?P<u>day|days|week|weeks|month|months|year|years)\b",
+    re.IGNORECASE,
+)
+IN_THE_LAST_WORD_N_RE = re.compile(
+    r"\bin\s+the\s+last\s+(?P<nw>" + '|'.join(NUMBER_WORDS.keys()) + r")\s+(?P<u>day|days|week|weeks|month|months|year|years)\b",
+    re.IGNORECASE,
+)
+FORTNIGHT_RE = re.compile(r"\b(?:last|past|previous)?\s*fortnight\b", re.IGNORECASE)
 
 RANGE_RE = re.compile(
     r"\b(?:between\s+(?P<between_a>.+?)\s+and\s+(?P<between_b>.+?)|from\s+(?P<from_a>.+?)\s+(?:to|until)\s+(?P<from_b>.+?)|since\s+(?P<since>.+?)|after\s+(?P<after>.+?)|before\s+(?P<before>.+?))\b",
@@ -119,6 +143,11 @@ def _parse_date_range(q: str, tz_name: str) -> tuple[str | None, str | None, lis
             elif p == 'yesterday':
                 d = (now - timedelta(days=1)).date().isoformat()
                 start = start or d; end = end or d; iso_aug.append(d)
+            elif p == 'recent':
+                # Define recent as last 30 days if nothing else specified
+                s = (now - timedelta(days=30)).date().isoformat()
+                e = now.date().isoformat()
+                start = start or s; end = end or e; iso_aug += [s, e]
             elif p == 'this week':
                 s, e = _week_bounds(now)
                 start = start or s; end = end or e; iso_aug += [s, e]
@@ -144,6 +173,46 @@ def _parse_date_range(q: str, tz_name: str) -> tuple[str | None, str | None, lis
                 s = datetime(y, 1, 1, tzinfo=tz).date().isoformat()
                 e = datetime(y, 12, 31, tzinfo=tz).date().isoformat()
                 start = start or s; end = end or e; iso_aug += [s, e]
+
+    # Quantified relative windows like "last 2 weeks", "in the last 14 days"
+    for rex in (LAST_N_RE, IN_THE_LAST_N_RE):
+        for m in rex.finditer(q):
+            n = int(m.group('n'))
+            u = m.group('u').lower()
+            days = n
+            if u.startswith('week'):
+                days = n * 7
+            elif u.startswith('month'):
+                # approx month as 30 days
+                days = n * 30
+            elif u.startswith('year'):
+                days = n * 365
+            s = (now - timedelta(days=days)).date().isoformat()
+            e = now.date().isoformat()
+            start = start or s; end = end or e; iso_aug += [s, e]
+
+    # Word-number windows like "last two weeks" or "in the last two weeks"
+    for m in list(LAST_WORD_N_RE.finditer(q)) + list(IN_THE_LAST_WORD_N_RE.finditer(q)):
+        n = NUMBER_WORDS.get(m.group('nw').lower(), 0)
+        if n <= 0:
+            continue
+        u = m.group('u').lower()
+        days = n
+        if u.startswith('week'):
+            days = n * 7
+        elif u.startswith('month'):
+            days = n * 30
+        elif u.startswith('year'):
+            days = n * 365
+        s = (now - timedelta(days=days)).date().isoformat()
+        e = now.date().isoformat()
+        start = start or s; end = end or e; iso_aug += [s, e]
+
+    # Fortnight (~14 days)
+    if FORTNIGHT_RE.search(q):
+        s = (now - timedelta(days=14)).date().isoformat()
+        e = now.date().isoformat()
+        start = start or s; end = end or e; iso_aug += [s, e]
 
     # Explicit ranges
     m = RANGE_RE.search(q)
@@ -277,6 +346,20 @@ def debug_parse_dates(q: str = FastQuery(...)):
     s, e, aug = _parse_date_range(q, settings.timezone)
     return {"start": s, "end": e, "aug": aug}
 
+@app.get("/debug/retrieve-dated")
+def debug_retrieve_dated(q: str = FastQuery(...), k: int = 5):
+    docs = _retrieve(q, k)
+    return [
+        {
+            "rank": i+1,
+            "source": d.metadata.get("source"),
+            "entry_date": d.metadata.get("entry_date"),
+            "title": d.metadata.get("title"),
+            "snippet": d.page_content[:200],
+        }
+        for i, d in enumerate(docs)
+    ]
+
 def _retrieve(q: str, k: int):
     vs = get_vectorstore()
     # Parse potential date constraints
@@ -317,9 +400,34 @@ def _retrieve(q: str, k: int):
                 except Exception:
                     pass
 
-    # fallback: unfiltered
-    docs = vs.similarity_search(q_aug, k=k)
-    return docs
+    # fallback with date-aware reranking
+    pool = max(k * 5, 50)
+    candidates = vs.similarity_search(q_aug, k=pool)
+
+    if start or end:
+        # compute distance: 0 for in-range; else days to nearest boundary; unknown dates penalized
+        def date_distance(meta):
+            d = meta.get('entry_date')
+            if not d:
+                return 365000  # large penalty for missing dates
+            try:
+                dd = datetime.fromisoformat(d).date()
+            except Exception:
+                return 365000
+            sdt = datetime.fromisoformat(start).date() if start else None
+            edt = datetime.fromisoformat(end).date() if end else None
+            if sdt and edt and sdt <= dd <= edt:
+                return 0
+            if sdt and dd < sdt:
+                return (sdt - dd).days
+            if edt and dd > edt:
+                return (dd - edt).days
+            return 0
+
+        scored = sorted(candidates, key=lambda d: (date_distance(d.metadata)))
+        return scored[:k]
+
+    return candidates[:k]
 
 def _reindex_worker():
     global _index_running, _last_index
