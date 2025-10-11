@@ -14,7 +14,11 @@ uvicorn rag_server:app --host 0.0.0.0 --port 8000 --log-level info &
 API_PID=$!
 sleep 2
 
-echo "Triggering background reindex..."
-curl -s -X POST http://127.0.0.1:8000/reindex >/dev/null || true
+if [ "${REINDEX_ON_START:-false}" = "true" ]; then
+  echo "Triggering background reindex (REINDEX_ON_START=true)..."
+  curl -s -X POST http://127.0.0.1:8000/reindex >/dev/null || true
+else
+  echo "Skipping background reindex on start (set REINDEX_ON_START=true to enable)"
+fi
 
 wait ${API_PID}

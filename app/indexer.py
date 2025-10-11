@@ -6,6 +6,7 @@ from md_loader import load_markdown_docs
 from typing import List, Dict, Tuple
 import os, re, json, hashlib, time
 import datetime as _dt
+from pathlib import Path
 
 # Core date formats we’ll accept (UK + ISO + long forms)
 DATE_CORE = (
@@ -201,27 +202,51 @@ def build_index() -> int:
     updated_files = 0
     start = time.time()
 
-    # 1) load docs & detect changes
-    #    md_loader yields (text, meta) and meta["source"] is vault-relative path
-    for text, meta in load_markdown_docs(settings.vault_path):
-        src = meta.get("source")
-        if not src:
+    # 1) Discover markdown files and detect changes without loading contents
+    vault = Path(settings.vault_path)
+    current_files: Dict[str, float] = {}
+    for p in vault.rglob("*.md"):
+        if "/.obsidian/" in str(p):
             continue
-        abs_path = os.path.join(settings.vault_path, src)
         try:
-            mtime = os.path.getmtime(abs_path)
+            mtime = p.stat().st_mtime
         except FileNotFoundError:
-            mtime = 0
+            continue
+        rel = str(p.relative_to(vault))
+        current_files[rel] = mtime
 
+    # Detect removed files (present in state but no longer on disk)
+    removed = [src for src in state_files.keys() if src not in current_files]
+    for src in removed:
+        prev = state_files.get(src) or {}
+        for i in range(prev.get("count", 0)):
+            to_delete_ids.append(_doc_id(src, i))
+        state_files.pop(src, None)
+
+    # 2) For changed files, load contents and prepare upserts
+    for src, mtime in current_files.items():
         prev = state_files.get(src)
         changed = (not prev) or (prev.get("mtime", 0) < mtime)
-
-        chunks = _iter_chunks(text)
-        total_chunks += len(chunks)
-
         if not changed:
-            # unchanged -> skip re-embedding
             continue
+
+        abs_path = os.path.join(settings.vault_path, src)
+        # Load content and metadata only for changed files
+        try:
+            import frontmatter
+            fm = frontmatter.load(abs_path)
+            text = fm.content or ""
+            # Reuse wikilink expansion from loader
+            from md_loader import _expand_wikilinks
+            text_norm = _expand_wikilinks(text)
+            meta = dict(fm.metadata or {})
+            meta.setdefault("title", Path(abs_path).stem.replace('-', ' '))
+            meta["source"] = src
+        except Exception:
+            continue
+
+        chunks = _iter_chunks(text_norm)
+        total_chunks += len(chunks)
 
         # mark old chunks of this file for deletion
         if prev and "count" in prev:
@@ -241,12 +266,12 @@ def build_index() -> int:
         state_files[src] = {"mtime": mtime, "count": len(chunks)}
         updated_files += 1
 
-    # 2) apply deletes in batches
+    # 3) apply deletes in batches
     BATCH = 256
     for i in range(0, len(to_delete_ids), BATCH):
         vs._collection.delete(ids=to_delete_ids[i:i+BATCH])
 
-    # 3) apply upserts in batches (id-aware)
+    # 4) apply upserts in batches (id-aware)
     for i in range(0, len(to_upsert), BATCH):
         batch = to_upsert[i:i+BATCH]
         ids = [b[0] for b in batch]

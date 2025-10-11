@@ -20,7 +20,7 @@ services:
   rag:
     build:
       context: ./app
-    container_name: obsidian-rag
+    container_name: markdown-rag
     depends_on:
       ollama:
         condition: service_healthy
@@ -41,9 +41,10 @@ services:
       TEMPERATURE: "0.0"
       NUM_CTX: "8192"
       WATCH_DEBOUNCE_SECS: "3"
-      NUM_PREDICTT: "256"
+      NUM_PREDICT: "800"
       ANONYMIZED_TELEMETRY: "False"
       CHROMA_TELEMETRY: "False"
+      REINDEX_ON_START: "False"
     volumes:
       - ${HOST_VAULT_PATH}:/vault:ro
       - chroma_index:/index
@@ -54,7 +55,7 @@ services:
   watcher:
     build:
       context: ./app
-    container_name: obsidian-rag-watcher
+    container_name: markdown-rag-watcher
     depends_on:
       rag:
         condition: service_started

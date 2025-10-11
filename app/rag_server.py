@@ -517,13 +517,6 @@ Context:
 
 Sources (use these numbers for citations):
 {legend}
-
-Instructions:
-- Use ONLY the Context.
-- Interpret any relative dates (e.g., today, yesterday, last week) relative to the Current date/time above.
-- Cite with bracketed numbers that refer to the Sources legend, e.g., [1], [2].
-- Do not invent citations and do not write placeholder paths like [path/to/note.md].
-
 Answer:"""
 
 @app.post("/query")
