@@ -44,7 +44,7 @@ services:
       NUM_PREDICT: "800"
       ANONYMIZED_TELEMETRY: "False"
       CHROMA_TELEMETRY: "False"
-      REINDEX_ON_START: "False"
+      REINDEX_ON_START: "true"
     volumes:
       - ${HOST_VAULT_PATH}:/vault:ro
       - chroma_index:/index

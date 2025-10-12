@@ -9,6 +9,8 @@ from fastapi.responses import StreamingResponse
 from fastapi import Form, UploadFile, File
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
+from pathlib import Path
+import os
 import httpx, json, re
 
 import threading, time
@@ -283,6 +285,79 @@ def _reindex_worker():
         _last_index["finished"] = time.time()
         with _index_lock:
             _index_running = False
+
+def _list_all_md_files() -> list[str]:
+    vault = Path(settings.vault_path)
+    out: list[str] = []
+    for p in vault.rglob("*.md"):
+        if "/.obsidian/" in str(p):
+            continue
+        try:
+            rel = str(p.relative_to(vault))
+        except Exception:
+            continue
+        out.append(rel)
+    return out
+
+def _load_index_state() -> dict:
+    try:
+        state_path = os.path.join(settings.index_path, "index_state.json")
+        if os.path.exists(state_path):
+            with open(state_path, "r", encoding="utf-8") as f:
+                return json.load(f)
+    except Exception:
+        pass
+    return {"files": {}}
+
+def _scan_changed_files() -> list[str]:
+    """Return vault-relative paths that are new/changed since last state, plus removed ones.
+    Removed paths are included so the indexer can delete their chunks.
+    """
+    # Current files on disk with mtimes
+    vault = Path(settings.vault_path)
+    current: dict[str, float] = {}
+    for p in vault.rglob("*.md"):
+        if "/.obsidian/" in str(p):
+            continue
+        try:
+            rel = str(p.relative_to(vault))
+        except Exception:
+            continue
+        try:
+            mtime = os.path.getmtime(p)
+        except Exception:
+            mtime = 0
+        current[rel.replace("\\", "/")] = mtime
+
+    state = _load_index_state()
+    state_files: dict = state.get("files", {})
+
+    changed: list[str] = []
+    for rel, mtime in current.items():
+        prev = state_files.get(rel) or {}
+        if (not prev) or (prev.get("mtime", 0) < mtime) or (prev.get("count") is None):
+            changed.append(rel)
+
+    removed = [rel for rel in state_files.keys() if rel not in current]
+
+    # Union, preserve order with changed first then removed
+    seen = set()
+    out: list[str] = []
+    for rel in changed + removed:
+        if rel not in seen:
+            seen.add(rel)
+            out.append(rel)
+    return out
+
+@app.post("/reindex/scan")
+def reindex_scan():
+    files = _scan_changed_files()
+    if not files:
+        return {"ok": True, "queued": 0}
+    threading.Thread(target=_reindex_worker_files, args=(files,), daemon=True).start()
+    return {"ok": True, "queued": len(files)}
+
+# Note: startup reindex is triggered by run.sh via HTTP to keep a single code path
 
 def _reindex_worker_files(files: list[str]):
     global _index_running, _last_index

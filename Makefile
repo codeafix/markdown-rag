@@ -1,4 +1,4 @@
-.PHONY: up down logs pull reindex ask shell chat
+.PHONY: up down logs logs-watcher pull reindex reindex-scan reindex-files reindex-status debug-retrieve debug-retrieve-dated parse-dates ask ask-stream chat shell check ps restart machine-start machine-init
 
 up:
 	podman compose -f docker-compose.yml up -d --build
@@ -7,13 +7,32 @@ down:
 	podman compose -f docker-compose.yml down
 
 logs:
-	podman logs -f obsidian-rag
+	podman logs -f markdown-rag
+
+logs-watcher:
+	podman logs -f markdown-rag-watcher
 
 pull:
-	podman exec -it ollama bash -lc "ollama pull ibm/granite4:tiny-h && ollama pull nomic-embed-text"
+	# Ensure services are up so env vars are available
+	podman compose -f docker-compose.yml up -d ollama rag
+	# Use the rag container's env (GENERATOR_MODEL, EMBED_MODEL, OLLAMA_BASE_URL)
+	podman exec -it markdown-rag bash -lc ' \
+	  echo "Pulling $$GENERATOR_MODEL via $$OLLAMA_BASE_URL"; \
+	  curl -s -X POST "$${OLLAMA_BASE_URL}/api/pull" -d "{\"name\":\"$${GENERATOR_MODEL}\"}" >/dev/null || true; \
+	  echo "Pulling $$EMBED_MODEL via $$OLLAMA_BASE_URL"; \
+	  curl -s -X POST "$${OLLAMA_BASE_URL}/api/pull" -d "{\"name\":\"$${EMBED_MODEL}\"}" >/dev/null || true \
+	'
 
 reindex:
 	curl -s -X POST http://localhost:8000/reindex | jq .
+
+reindex-scan:
+	curl -s -X POST http://localhost:8000/reindex/scan | jq .
+
+reindex-files:
+	@read -p "Comma-separated files (relative to vault): " FILES; \
+	JSON=$$(printf "%s" "$$FILES" | jq -R 'split(",")|map(gsub("^\\s+|\\s+$"; "")) | {files: .}'); \
+	curl -s -X POST http://localhost:8000/reindex/files -H "Content-Type: application/json" -d "$$JSON" | jq .
 
 reindex-status:
 	curl -s -X GET http://localhost:8000/reindex/status | jq .
@@ -51,7 +70,7 @@ chat:
 	bash ./chat.sh
 
 shell:
-	podman exec -it obsidian-rag bash
+	podman exec -it markdown-rag bash
 
 check:
 	podman compose version || true
