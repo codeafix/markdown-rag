@@ -1,3 +1,4 @@
+from name_parser import extract_name_terms
 from fastapi import FastAPI
 from pydantic import BaseModel
 from settings import settings
@@ -128,6 +129,7 @@ def debug_retrieve_dated(q: str = FastQuery(...), k: int = 5):
             "rank": i+1,
             "source": d.metadata.get("source"),
             "entry_date": d.metadata.get("entry_date"),
+            "people": d.metadata.get("people"),
             "title": d.metadata.get("title"),
             "snippet": d.page_content[:200],
         }
@@ -140,16 +142,19 @@ def _retrieve(q: str, k: int):
     start, end, iso_aug = _parse_date_range(q, settings.timezone)
 
     q_aug = q
+    name_terms = extract_name_terms(q)
+    if name_terms:
+        q_aug = f"{q_aug}\nNames: " + ", ".join(name_terms)
     if iso_aug:
         # Append normalized dates to bias the embedding towards time-relevant chunks
         if start and end and start != end:
-            q_aug = f"{q}\nDates: {start} to {end}"
+            q_aug = f"{q_aug}\nDates: {start} to {end}"
         elif start and end and start == end:
-            q_aug = f"{q}\nDate: {start}"
+            q_aug = f"{q_aug}\nDate: {start}"
         elif start:
-            q_aug = f"{q}\nSince: {start}"
+            q_aug = f"{q_aug}\nSince: {start}"
         elif end:
-            q_aug = f"{q}\nBefore: {end}"
+            q_aug = f"{q_aug}\nBefore: {end}"
 
     # Try filtered search if we have constraints
     def _in_range(meta) -> bool:
@@ -195,17 +200,70 @@ def _retrieve(q: str, k: int):
                 except Exception:
                     pass
 
-    # fallback with date-aware reranking
-    # Larger pool when date constraints exist to avoid dropping valid in-range items
-    pool = max(k * 20, 400) if (start or end) else max(k * 5, 50)
+    # Wide-net retrieval, then filter by date, then by names
+    wants_recent = any(w in q.lower() for w in ["most recent", "latest", "recent"]) or (iso_aug and not start and not end)
+    pool = max(k * 40, 800) if (name_terms or start or end) else max(k * 10, 200)
     candidates = vs.similarity_search(q_aug, k=pool)
 
-    if start or end:
-        # Strict mode: return only in-range candidates. If none, return empty list.
-        in_range = [d for d in candidates if _in_range(d.metadata or {})]
-        return in_range[:k]
+    def _people_match(meta: dict) -> bool:
+        if not name_terms:
+            return False
+        ppl = meta.get("people") or []
+        # Accept either list or comma-separated string
+        if isinstance(ppl, str):
+            ppl = [s.strip() for s in ppl.split(',') if s.strip()]
+        elif not isinstance(ppl, list):
+            ppl = []
+        ppl_lower = [str(p).lower() for p in ppl]
+        # Require all name terms to match either people list or title/source
+        for t in name_terms:
+            tl = t.lower()
+            name_hit = any((tl == p) or (tl in p) or (p in tl) for p in ppl_lower)
+            if not name_hit:
+                # Fallback: also check title/source when people metadata not sufficient
+                title = str(meta.get("title") or "").lower()
+                source = str(meta.get("source") or "").lower()
+                name_hit = (tl in title) or (tl in source)
+            if not name_hit:
+                return False
+        return True
 
-    return candidates[:k]
+    def _sort_by_recent(docs):
+        if not wants_recent:
+            return docs
+        def _key(d):
+            try:
+                dd = datetime.fromisoformat((d.metadata or {}).get("entry_date") or "").date()
+                return dd.toordinal()
+            except Exception:
+                return -1
+        return sorted(docs, key=_key, reverse=True)
+
+    # 1) Date filter (strict when provided)
+    worklist = candidates
+    if start or end:
+        worklist = [d for d in candidates if _in_range(d.metadata or {})]
+
+    # 2) Name filter (strict when provided)
+    if name_terms:
+        worklist = [d for d in worklist if _people_match(d.metadata or {})]
+
+    # 3) If nothing left and we have name terms, try a secondary name-focused search
+    if not worklist and name_terms:
+        sec_q = "Names: " + ", ".join(name_terms)
+        try:
+            sec = vs.similarity_search(sec_q, k=pool)
+        except Exception:
+            sec = []
+        # Re-apply name filter, but intentionally drop the date filter
+        # This avoids empty results for vague recency queries (e.g., "most recent")
+        wl2 = [d for d in (sec or []) if _people_match(d.metadata or {})]
+        worklist = wl2
+
+    # 4) Sort by recent if requested
+    worklist = _sort_by_recent(worklist)
+
+    return worklist[:k]
 
 def _reindex_worker():
     global _index_running, _last_index

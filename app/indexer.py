@@ -3,6 +3,7 @@ from langchain_ollama.embeddings import OllamaEmbeddings
 from langchain_text_splitters import MarkdownHeaderTextSplitter, RecursiveCharacterTextSplitter
 from settings import settings
 from md_loader import load_markdown_docs
+from name_parser import extract_people_from_text
 from typing import List, Dict, Tuple
 import os, re, json, hashlib, time
 import datetime as _dt
@@ -178,8 +179,36 @@ def _iter_chunks(text: str) -> list[tuple[str | None, str]]:
                     out.append((entry_date, c))
     return out
 
+def _people_to_text(v) -> str:
+    if v is None:
+        return ""
+    if isinstance(v, (list, tuple)):
+        return ", ".join(str(x) for x in v if str(x).strip())
+    return str(v)
+
 def _doc_id(source: str, idx: int) -> str:
     return hashlib.md5(f"{source}::{idx}".encode("utf-8")).hexdigest()
+
+def _sanitize_metadata(meta: Dict) -> Dict:
+    out: Dict = {}
+    for k, v in (meta or {}).items():
+        # Pass through primitives
+        if isinstance(v, (str, int, float, bool)) or v is None:
+            out[k] = v
+            continue
+        # Common list fields: join with comma-space for readability
+        if isinstance(v, (list, tuple)):
+            try:
+                out[k] = ", ".join(str(x) for x in v)
+            except Exception:
+                out[k] = str(v)
+            continue
+        # Dicts or other complex types -> JSON string
+        try:
+            out[k] = json.dumps(v, ensure_ascii=False)
+        except Exception:
+            out[k] = str(v)
+    return out
 
 def get_vectorstore() -> Chroma:
     """Open the persisted Chroma collection with the Ollama embedder."""
@@ -191,7 +220,9 @@ def get_vectorstore() -> Chroma:
     return Chroma(persist_directory=settings.index_path, embedding_function=emb)
 
 def build_index() -> int:
-    """Full reindex implemented by delegating to build_index_files over all .md files."""
+    """Full reindex implemented by delegating to build_index_files over all .md files.
+    Also cleans up orphaned chunks for files that were removed or renamed.
+    """
     vault = Path(settings.vault_path)
     all_files: List[str] = []
     for p in vault.rglob("*.md"):
@@ -202,6 +233,31 @@ def build_index() -> int:
         except Exception:
             continue
         all_files.append(rel)
+
+    # Clean up removed files (present in state but no longer on disk)
+    state = _load_state()
+    state_files = state.get("files", {})
+    removed = [src for src in list(state_files.keys()) if src not in all_files]
+    if removed:
+        emb = OllamaEmbeddings(
+            base_url=settings.ollama_base_url,
+            model=settings.embed_model,
+            keep_alive=10,
+        )
+        vs = Chroma(persist_directory=settings.index_path, embedding_function=emb)
+        ids: List[str] = []
+        for src in removed:
+            prev = state_files.get(src) or {}
+            for i in range(prev.get("count", 0)):
+                ids.append(_doc_id(src, i))
+            state_files.pop(src, None)
+        # delete in batches
+        BATCH = 256
+        for i in range(0, len(ids), BATCH):
+            vs._collection.delete(ids=ids[i:i+BATCH])
+        # Persistence is automatic with PersistentClient; no explicit persist() call needed
+        _save_state(state)
+
     return build_index_files(all_files)
 
 def build_index_files(sources: List[str]) -> int:
@@ -260,6 +316,40 @@ def build_index_files(sources: List[str]) -> int:
             meta = dict(fm.metadata or {})
             meta.setdefault("title", Path(abs_path).stem.replace('-', ' '))
             meta["source"] = src
+            # derive people from title, source filename, and markdown headings
+            title = meta.get("title") or ""
+            fname = Path(abs_path).stem.replace('-', ' ').replace('_', ' ')
+            headings = []
+            for line in text.splitlines():
+                if line.lstrip().startswith('#'):
+                    # strip leading #'s and spaces
+                    h = line.lstrip('#').strip()
+                    if h:
+                        headings.append(h)
+            # include parent folder names as candidate blobs, normalized
+            parent_blobs = []
+            try:
+                for seg in Path(src).parts[:-1]:
+                    if seg:
+                        parent_blobs.append(seg.replace('-', ' ').replace('_', ' '))
+            except Exception:
+                pass
+
+            people = []
+            for blob in [title, fname] + parent_blobs + headings:
+                if blob:
+                    people.extend(extract_people_from_text(blob))
+            if people:
+                # unique preserve order
+                seen = set()
+                uniq = []
+                for p in people:
+                    k = p.lower()
+                    if k in seen:
+                        continue
+                    seen.add(k)
+                    uniq.append(p)
+                meta["people"] = uniq
         except Exception:
             continue
 
@@ -274,12 +364,22 @@ def build_index_files(sources: List[str]) -> int:
         # new upserts
         for i, (entry_date, c) in enumerate(chunks):
             cid = _doc_id(src, i)
-            up_meta = dict(meta)
+            up_meta = _sanitize_metadata(meta)
             if entry_date:
                 up_meta["entry_date"] = entry_date
             up_meta["chunk_index"] = i
             up_meta["id"] = cid
-            to_upsert.append((cid, up_meta, c))
+            # Embed key metadata into text to strengthen similarity
+            title_txt = meta.get("title") or Path(abs_path).stem.replace('-', ' ')
+            people_txt = _people_to_text(meta.get("people"))
+            header_parts = [f"title: {title_txt}", f"source: {src}"]
+            if people_txt:
+                header_parts.insert(1, f"people: {people_txt}")
+            if entry_date:
+                header_parts.append(f"date: {entry_date}")
+            header = "[" + "] [".join(header_parts) + "]"
+            text_with_meta = f"{header}\n\n{c}"
+            to_upsert.append((cid, up_meta, text_with_meta))
 
         state_files[src] = {"mtime": mtime, "count": len(chunks)}
         updated_files += 1
@@ -297,7 +397,7 @@ def build_index_files(sources: List[str]) -> int:
         texts = [b[2] for b in batch]
         vs.add_texts(texts=texts, metadatas=metas, ids=ids)
 
-    vs.persist()
+    # Persistence is automatic with PersistentClient; no explicit persist() call needed
     _save_state(state)
 
     took = time.time() - start
