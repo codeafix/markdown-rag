@@ -1,4 +1,4 @@
-.PHONY: up down logs pull reindex ask shell
+.PHONY: up down logs pull reindex ask shell chat
 
 up:
 	podman compose -f docker-compose.yml up -d --build
@@ -37,6 +37,9 @@ ask-stream:
 	curl --no-buffer -s -X POST http://localhost:8000/query/stream \
 	  -H "Content-Type: application/json" \
 	  -d "$$(jq -n --arg q "$$Q" '{question:$$q}')" ; echo
+
+chat:
+	bash ./chat.sh
 
 shell:
 	podman exec -it obsidian-rag bash

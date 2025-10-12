@@ -454,6 +454,8 @@ async def _generate(prompt: str) -> str:
         "prompt": prompt,
         "options": {"temperature": settings.temperature, "num_ctx": settings.num_ctx},
         "stream": False,
+        "num_predict": getattr(settings, "num_predict", 256),
+        "keep_alive": "10m",
     }
     async with httpx.AsyncClient(base_url=settings.ollama_base_url, timeout=120) as client:
         r = await client.post("/api/generate", json=payload)
