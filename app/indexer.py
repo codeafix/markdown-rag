@@ -1,5 +1,5 @@
 from langchain_chroma import Chroma
-from langchain_community.embeddings import OllamaEmbeddings
+from langchain_ollama.embeddings import OllamaEmbeddings
 from langchain_text_splitters import MarkdownHeaderTextSplitter, RecursiveCharacterTextSplitter
 from settings import settings
 from md_loader import load_markdown_docs
@@ -185,58 +185,76 @@ def get_vectorstore() -> Chroma:
     """Open the persisted Chroma collection with the Ollama embedder."""
     emb = OllamaEmbeddings(
         base_url=settings.ollama_base_url,
-        model=settings.embed_model
+        model=settings.embed_model,
+        keep_alive=10,
     )
     return Chroma(persist_directory=settings.index_path, embedding_function=emb)
 
 def build_index() -> int:
-    emb = OllamaEmbeddings(base_url=settings.ollama_base_url, model=settings.embed_model)
+    """Full reindex implemented by delegating to build_index_files over all .md files."""
+    vault = Path(settings.vault_path)
+    all_files: List[str] = []
+    for p in vault.rglob("*.md"):
+        if "/.obsidian/" in str(p):
+            continue
+        try:
+            rel = str(p.relative_to(vault))
+        except Exception:
+            continue
+        all_files.append(rel)
+    return build_index_files(all_files)
+
+def build_index_files(sources: List[str]) -> int:
+    emb = OllamaEmbeddings(
+        base_url=settings.ollama_base_url,
+        model=settings.embed_model,
+        keep_alive=10,
+    )
     vs = Chroma(persist_directory=settings.index_path, embedding_function=emb)
 
     state = _load_state()
     state_files = state["files"]
 
-    to_upsert: List[Tuple[str, Dict, str]] = []  # (id, metadata, text)
+    to_upsert: List[Tuple[str, Dict, str]] = []
     to_delete_ids: List[str] = []
     total_chunks = 0
     updated_files = 0
     start = time.time()
 
-    # 1) Discover markdown files and detect changes without loading contents
-    vault = Path(settings.vault_path)
-    current_files: Dict[str, float] = {}
-    for p in vault.rglob("*.md"):
-        if "/.obsidian/" in str(p):
-            continue
-        try:
-            mtime = p.stat().st_mtime
-        except FileNotFoundError:
-            continue
-        rel = str(p.relative_to(vault))
-        current_files[rel] = mtime
-
-    # Detect removed files (present in state but no longer on disk)
-    removed = [src for src in state_files.keys() if src not in current_files]
-    for src in removed:
-        prev = state_files.get(src) or {}
-        for i in range(prev.get("count", 0)):
-            to_delete_ids.append(_doc_id(src, i))
-        state_files.pop(src, None)
-
-    # 2) For changed files, load contents and prepare upserts
-    for src, mtime in current_files.items():
+    for src in sources:
+        # normalize to vault-relative posix path
+        src = src.replace("\\", "/").lstrip("/")
+        abs_path = os.path.join(settings.vault_path, src)
+        exists = os.path.exists(abs_path)
         prev = state_files.get(src)
-        changed = (not prev) or (prev.get("mtime", 0) < mtime)
+
+        if not exists:
+            # treat as deletion
+            if prev and "count" in prev:
+                for i in range(prev["count"]):
+                    to_delete_ids.append(_doc_id(src, i))
+            state_files.pop(src, None)
+            continue
+
+        try:
+            mtime = os.path.getmtime(abs_path)
+        except FileNotFoundError:
+            # race: consider deleted
+            if prev and "count" in prev:
+                for i in range(prev["count"]):
+                    to_delete_ids.append(_doc_id(src, i))
+            state_files.pop(src, None)
+            continue
+
+        changed = (not prev) or (prev.get("mtime", 0) < mtime) or (prev.get("count") is None)
         if not changed:
             continue
 
-        abs_path = os.path.join(settings.vault_path, src)
-        # Load content and metadata only for changed files
+        # load and chunk
         try:
             import frontmatter
             fm = frontmatter.load(abs_path)
-            text = fm.content or ""
-            # Reuse wikilink expansion from loader
+            text = (fm.content or "")
             from md_loader import _expand_wikilinks
             text_norm = _expand_wikilinks(text)
             meta = dict(fm.metadata or {})
@@ -248,12 +266,12 @@ def build_index() -> int:
         chunks = _iter_chunks(text_norm)
         total_chunks += len(chunks)
 
-        # mark old chunks of this file for deletion
+        # mark old for deletion
         if prev and "count" in prev:
             for i in range(prev["count"]):
                 to_delete_ids.append(_doc_id(src, i))
 
-        # schedule new chunks for upsert
+        # new upserts
         for i, (entry_date, c) in enumerate(chunks):
             cid = _doc_id(src, i)
             up_meta = dict(meta)
@@ -266,12 +284,12 @@ def build_index() -> int:
         state_files[src] = {"mtime": mtime, "count": len(chunks)}
         updated_files += 1
 
-    # 3) apply deletes in batches
+    # apply deletes
     BATCH = 256
     for i in range(0, len(to_delete_ids), BATCH):
         vs._collection.delete(ids=to_delete_ids[i:i+BATCH])
 
-    # 4) apply upserts in batches (id-aware)
+    # apply upserts
     for i in range(0, len(to_upsert), BATCH):
         batch = to_upsert[i:i+BATCH]
         ids = [b[0] for b in batch]
@@ -283,5 +301,5 @@ def build_index() -> int:
     _save_state(state)
 
     took = time.time() - start
-    print(f"[INDEX] files_changed={updated_files} chunks_total={total_chunks} upserts={len(to_upsert)} deletes={len(to_delete_ids)} took={took:.1f}s")
+    print(f"[INDEX:FILES] files_changed={updated_files} upserts={len(to_upsert)} deletes={len(to_delete_ids)} took={took:.1f}s")
     return total_chunks

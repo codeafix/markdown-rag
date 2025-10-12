@@ -1,7 +1,7 @@
 from fastapi import FastAPI
 from pydantic import BaseModel
 from settings import settings
-from indexer import build_index, get_vectorstore
+from indexer import build_index, build_index_files, get_vectorstore
 from fastapi import Query as FastQuery
 from fastapi.responses import StreamingResponse
 from fastapi import Form, UploadFile, File
@@ -12,7 +12,7 @@ import httpx, json, re
 import threading, time
 _index_lock = threading.Lock()
 _index_running = False
-_last_index = {"ok": False, "started": 0, "finished": 0, "chunks": 0, "error": ""}
+_last_index = {"ok": False, "started": 0, "finished": 0, "chunks": 0, "error": "", "mode": "", "files": []}
 
 app = FastAPI(title="Obsidian RAG")
 
@@ -275,6 +275,16 @@ def reindex():
 def reindex_status():
     return {"running": _index_running, "last": _last_index}
 
+class ReindexFiles(BaseModel):
+    files: list[str]
+
+@app.post("/reindex/files")
+def reindex_files(body: ReindexFiles):
+    if _index_running:
+        return {"status": "running", "last": _last_index}
+    threading.Thread(target=_reindex_worker_files, args=(body.files,), daemon=True).start()
+    return {"status": "started", "files": body.files}
+
 @app.get("/debug/retrieve")
 def debug_retrieve(q: str = FastQuery(...), k: int = 5):
     vs = get_vectorstore()
@@ -435,10 +445,29 @@ def _reindex_worker():
         if _index_running:
             return
         _index_running = True
-    _last_index = {"ok": False, "started": time.time(), "finished": 0, "chunks": 0, "error": ""}
+    _last_index = {"ok": False, "started": time.time(), "finished": 0, "chunks": 0, "error": "", "mode": "full", "files": []}
 
     try:
         n = build_index()
+        _last_index["ok"] = True
+        _last_index["chunks"] = n
+    except Exception as e:
+        _last_index["error"] = str(e)
+    finally:
+        _last_index["finished"] = time.time()
+        with _index_lock:
+            _index_running = False
+
+def _reindex_worker_files(files: list[str]):
+    global _index_running, _last_index
+    with _index_lock:
+        if _index_running:
+            return
+        _index_running = True
+    _last_index = {"ok": False, "started": time.time(), "finished": 0, "chunks": 0, "error": "", "mode": "files", "files": files}
+
+    try:
+        n = build_index_files(files)
         _last_index["ok"] = True
         _last_index["chunks"] = n
     except Exception as e:
@@ -509,12 +538,11 @@ def _final_prompt(question: str, docs) -> str:
     legend = _sources_legend(docs)
     now = _now_info()
     return f"""{sys}
-Current date/time: {now['iso_date']} ({now['weekday']}) {now['time_24h']} [{now['tz']}]
-
 Question:
 {question}
 
 Context:
+Current date/time: {now['iso_date']} ({now['weekday']}) {now['time_24h']} [{now['tz']}]
 {context}
 
 Sources (use these numbers for citations):

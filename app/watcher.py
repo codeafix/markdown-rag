@@ -1,4 +1,4 @@
-import os, time, threading
+import os, time, threading, json
 from watchdog.observers import Observer
 from watchdog.observers.polling import PollingObserver
 from watchdog.events import FileSystemEventHandler
@@ -9,6 +9,11 @@ RAG_URL = os.getenv("RAG_URL", "http://rag:8000/reindex")
 DEBOUNCE = float(os.getenv("WATCH_DEBOUNCE_SECS", "3"))
 # Default to polling in container mounts where inotify can be unreliable (Docker Desktop on macOS)
 WATCH_POLLING = os.getenv("WATCH_POLLING", "true").lower() == "true"
+RAG_FILES_URL = os.getenv("RAG_FILES_URL", "http://rag:8000/reindex/files")
+
+# Track changed files (vault-relative POSIX paths)
+_CHANGED: set[str] = set()
+_CHANGED_LOCK = threading.Lock()
 
 class DebouncedReindex:
     def __init__(self, delay):
@@ -25,12 +30,29 @@ class DebouncedReindex:
             self.timer.start()
 
     def _fire(self):
+        # Snapshot and clear the changed set
+        with _CHANGED_LOCK:
+            files = sorted(_CHANGED)
+            _CHANGED.clear()
+        if not files:
+            return
+        # Try partial reindex first
+        payload = {"files": files}
+        headers = {"Content-Type": "application/json"}
         try:
-            print("Watcher: reindexing...")
-            r = requests.post(RAG_URL, timeout=300)
-            print("Watcher: reindex result:", r.status_code, r.text[:200])
+            print(f"Watcher: reindexing {len(files)} file(s)...")
+            r = requests.post(RAG_FILES_URL, data=json.dumps(payload), headers=headers, timeout=300)
+            if r.status_code >= 400:
+                raise RuntimeError(f"{r.status_code} {r.text[:200]}")
+            print("Watcher: partial reindex result:", r.status_code)
         except Exception as e:
-            print("Watcher: reindex error:", e)
+            # Fallback: trigger full reindex
+            try:
+                print("Watcher: partial reindex failed, falling back to full reindex:", e)
+                r = requests.post(RAG_URL, timeout=300)
+                print("Watcher: full reindex result:", r.status_code, r.text[:200])
+            except Exception as ee:
+                print("Watcher: reindex error:", ee)
 
 class Handler(FileSystemEventHandler):
     def __init__(self, debouncer):
@@ -45,9 +67,23 @@ class Handler(FileSystemEventHandler):
         dst = getattr(event, "dest_path", None)
         if dst:
             paths.append(dst)
-        if not any(p and p.lower().endswith(".md") for p in paths):
+        md_paths = [p for p in paths if p and p.lower().endswith(".md")]
+        if not md_paths:
             return
-        print("Watcher: change detected:", event.event_type, paths)
+        # Normalize to vault-relative POSIX paths
+        rels = []
+        for p in md_paths:
+            try:
+                rel = os.path.relpath(p, WATCH_PATH)
+            except ValueError:
+                # If outside the watch path, skip
+                continue
+            rels.append(rel.replace('\\', '/'))
+        if not rels:
+            return
+        with _CHANGED_LOCK:
+            _CHANGED.update(rels)
+        print("Watcher: change detected:", event.event_type, rels)
         self.debouncer.trigger()
 
 def main():

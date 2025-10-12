@@ -22,6 +22,10 @@ debug-retrieve:
 	@read -p "Query: " Q; \
 	curl -s -X GET "http://localhost:8000/debug/retrieve?q=$$Q&k=5" | jq .
 
+debug-retrieve-dated:
+	@read -p "Query: " Q; \
+	curl -s -X GET "http://localhost:8000/debug/retrieve-dated?q=$$Q&k=5" | jq .
+
 parse-dates:
 	@read -p "Query: " Q; \
 	curl -s -X GET "http://localhost:8000/debug/parse-dates?q=$$Q" | jq .
