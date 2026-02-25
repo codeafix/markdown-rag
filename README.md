@@ -46,6 +46,9 @@ markdown-rag/
     watcher.py           # Vault filesystem watcher
     system_prompt.txt    # System prompt used for answering
     run.sh               # Entrypoint used by container
+  scripts/
+    mcp_stdio.py         # MCP server (stdio) for Cursor & Claude Desktop
+    requirements.txt     # mcp, httpx
   docker-compose.yml
   Makefile
   chat.sh               # Simple local chat helper
@@ -101,6 +104,7 @@ markdown-rag/
 - `make debug-retrieve` / `make debug-retrieve-dated` → inspect retrieval
 - `make parse-dates` → inspect date parsing
 - `make ask` / `make ask-stream` → quick interactive ask / streaming
+- `make mcp-install` → install MCP deps for Cursor / Claude Desktop
 
 ## Troubleshooting
 - **No results for sentence queries with a name**: ensure your notes have the person name in title, filename, headings, or a parent folder (so it gets into `people`). Run `make reindex`.
@@ -116,6 +120,38 @@ markdown-rag/
 ## Use host Ollama
 - Change `OLLAMA_BASE_URL` env for `rag` service to `http://host.containers.internal:11434`.
 - Optionally remove the `ollama` service.
+
+## MCP Server
+
+The `search_notes` tool lets Cursor or Claude Desktop agents semantically query the vector store; the agent uses the returned chunks to synthesize answers.
+
+**Prerequisites:** RAG stack running (`make up`), `make mcp-install` (or `pip install -r scripts/requirements.txt`).
+
+### Cursor
+
+`.cursor/mcp.json` is preconfigured. Ensure Cursor's workspace root is the project (so `scripts/mcp_stdio.py` resolves). Restart Cursor to load the server.
+
+### Claude Desktop
+
+Add to your Claude Desktop config (e.g. `~/Library/Application Support/Claude/claude_desktop_config.json` on macOS):
+
+```json
+{
+  "mcpServers": {
+    "markdown-rag": {
+      "command": "python",
+      "args": ["/absolute/path/to/markdown-rag/scripts/mcp_stdio.py"],
+      "env": { "RAG_URL": "http://localhost:8000" }
+    }
+  }
+}
+```
+
+Use your actual project path. Restart Claude Desktop.
+
+### Tool
+
+`search_notes(question: str, top_k: int = 5)` — semantic search returning chunks with source, title, entry_date, people, snippet. Supports date phrases ("last week") and name filtering.
 
 ## Notes
 - The loader **ignores** `.obsidian/` and expands `[[wikilinks]]` to their alias or target text.

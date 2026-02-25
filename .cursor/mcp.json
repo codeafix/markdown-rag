@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "markdown-rag": {
+      "command": "python",
+      "args": ["scripts/mcp_stdio.py"],
+      "env": {
+        "RAG_URL": "http://localhost:8000"
+      }
+    }
+  }
+}

@@ -1,4 +1,4 @@
-.PHONY: up down logs logs-watcher pull reindex reindex-scan reindex-files reindex-status debug-retrieve debug-retrieve-dated parse-dates ask ask-stream chat shell check ps restart machine-start machine-init
+.PHONY: up down logs logs-watcher pull reindex reindex-scan reindex-files reindex-status debug-retrieve debug-retrieve-dated parse-dates ask ask-stream chat shell check ps restart machine-start machine-init mcp-install
 
 up:
 	podman compose -f docker-compose.yml up -d --build
@@ -87,4 +87,7 @@ machine-start:
 
 machine-init:
 	podman machine init --cpus 4 --memory 8192 --disk-size 50
+
+mcp-install:
+	pip install -r scripts/requirements.txt || python3 -m pip install -r scripts/requirements.txt
 
