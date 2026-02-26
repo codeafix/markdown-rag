@@ -169,16 +169,22 @@ def _iter_chunks(text: str) -> list[tuple[str | None, str]]:
             sec_text = getattr(sec, "page_content", "").strip()
             if not sec_text:
                 continue
-            # sentence-first
+            # Build all chunks for this section first
+            section_chunks: list[str] = []
             s_chunks = sentence_chunks(sec_text, settings.chunk_size, settings.chunk_overlap) or [sec_text]
             for c in s_chunks:
                 if len(c) > settings.chunk_size * 1.5:
-                    for cc in char_splitter.split_text(c):
-                        out.append((entry_date, cc))
+                    section_chunks.extend(char_splitter.split_text(c))
                 else:
+                    section_chunks.append(c)
+            # Filter short chunks, but always keep the last one in the section.
+            # Short non-final chunks are genuine junk (e.g. "TDD book:").
+            # Short final chunks are legitimate tail content and must not be dropped.
+            for i, c in enumerate(section_chunks):
+                is_last = (i == len(section_chunks) - 1)
+                if len(c.strip()) >= 100 or is_last:
                     out.append((entry_date, c))
-    # Drop very small fragments (e.g., "TDD book:") to avoid low-signal chunks.
-    return [(d, c) for (d, c) in out if len(c.strip()) >= 100]
+    return out
 
 def _entities_to_text(v) -> str:
     if v is None:
@@ -318,13 +324,44 @@ def build_index_files(sources: List[str]) -> int:
             meta.setdefault("title", Path(abs_path).stem.replace('-', ' '))
             meta["source"] = src
 
-            # NOTE: Entity metadata is stored under the 'entities' field.
-            # If you change this logic or rename the field, you MUST run a full
-            # re-index so that existing chunks no longer carry stale 'people'
+            # NOTE: Entity metadata is ultimately stored per-chunk under the
+            # 'entities' field. Here we derive file-level entities under
+            # 'file_entities' which are merged with per-chunk entities later.
+            # We include entities from both the main content and the
+            # filename/title/path context so that notes like "Michael notes.md"
+            # still surface Michael even if the body omits the name.
+            # If you change this logic or rename these fields, you MUST run a
+            # full re-index so that existing chunks no longer carry stale
             # metadata from older index versions.
-            entities = extract_entities_from_text(text_norm[:2000])
-            if entities:
-                meta["entities"] = entities
+            title = str(meta.get("title") or "")
+            fname = Path(abs_path).stem.replace("-", " ").replace("_", " ")
+            parent_blobs: list[str] = []
+            try:
+                for seg in Path(src).parts[:-1]:
+                    if seg:
+                        parent_blobs.append(seg.replace("-", " ").replace("_", " "))
+            except Exception:
+                pass
+
+            name_pieces = [title, fname] + parent_blobs
+            names_blob = " ".join(p for p in name_pieces if p)
+
+            name_entities = extract_entities_from_text(names_blob) if names_blob else []
+
+            file_entities: list[str] = []
+            seen_fe: set[str] = set()
+            for e in name_entities:
+                s = str(e).strip()
+                if not s:
+                    continue
+                k = s.lower()
+                if k in seen_fe:
+                    continue
+                seen_fe.add(k)
+                file_entities.append(s)
+
+            if file_entities:
+                meta["file_entities"] = file_entities
         except Exception:
             continue
 
@@ -348,9 +385,28 @@ def build_index_files(sources: List[str]) -> int:
                 up_meta["entry_date"] = effective_date
             up_meta["chunk_index"] = i
             up_meta["id"] = cid
+
+            # Compute per-chunk entities as the deduplicated union of
+            # file-level entities and entities extracted from this chunk.
+            chunk_entities = extract_entities_from_text(c)
+            merged_entities: list[str] = []
+            seen_entities: set[str] = set()
+            for source in (file_entities, chunk_entities):
+                for e in source or []:
+                    s = str(e).strip()
+                    if not s:
+                        continue
+                    k = s.lower()
+                    if k in seen_entities:
+                        continue
+                    seen_entities.add(k)
+                    merged_entities.append(s)
+            if merged_entities:
+                up_meta["entities"] = ", ".join(merged_entities)
+
             # Embed key metadata into text to strengthen similarity
             title_txt = meta.get("title") or Path(abs_path).stem.replace('-', ' ')
-            entities_txt = _entities_to_text(meta.get("entities"))
+            entities_txt = _entities_to_text(merged_entities)
             header_parts = [f"title: {title_txt}", f"source: {src}"]
             if entities_txt:
                 header_parts.insert(1, f"entities: {entities_txt}")

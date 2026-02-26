@@ -143,7 +143,7 @@ def _retrieve(q: str, k: int):
     # Parse potential date constraints
     start, end, iso_aug = _parse_date_range(q, settings.timezone)
 
-    q_aug = q
+    q_aug = q.lower()
     name_terms = extract_name_terms(q)
     if name_terms:
         q_aug = f"{q_aug}\nNames: " + ", ".join(name_terms)
