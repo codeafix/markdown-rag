@@ -58,7 +58,7 @@ def debug_retrieve(q: str = FastQuery(...), k: int = 5):
     docs = vs.similarity_search(q, k=k)
     return [
         {"rank": i+1, "source": d.metadata.get("source"), "title": d.metadata.get("title"), "entry_date": d.metadata.get("entry_date"),
-         "snippet": d.page_content[:300]}
+         "snippet": d.page_content[:800]}
         for i, d in enumerate(docs)
     ]
 
@@ -85,7 +85,7 @@ async def debug_split_by_date(
         "sections": [
             {
                 "entry_date": d or None,
-                "snippet": t.strip()[:200] + ("..." if len(t.strip()) > 200 else "")
+                "snippet": t.strip()[:800] + ("..." if len(t.strip()) > 800 else "")
             }
             for d, t in sections
         ]
@@ -133,7 +133,7 @@ def debug_retrieve_dated(q: str = FastQuery(...), k: int = 5):
             "entry_date": d.metadata.get("entry_date"),
             "people": d.metadata.get("people"),
             "title": d.metadata.get("title"),
-            "snippet": d.page_content[:200],
+            "snippet": d.page_content[:800],
         }
         for i, d in enumerate(docs)
     ]

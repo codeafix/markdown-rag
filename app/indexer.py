@@ -177,7 +177,8 @@ def _iter_chunks(text: str) -> list[tuple[str | None, str]]:
                         out.append((entry_date, cc))
                 else:
                     out.append((entry_date, c))
-    return out
+    # Drop very small fragments (e.g., "TDD book:") to avoid low-signal chunks.
+    return [(d, c) for (d, c) in out if len(c.strip()) >= 100]
 
 def _people_to_text(v) -> str:
     if v is None:
@@ -356,6 +357,9 @@ def build_index_files(sources: List[str]) -> int:
         chunks = _iter_chunks(text_norm)
         total_chunks += len(chunks)
 
+        # Fallback date for undated chunks: file mtime as ISO date.
+        fallback_entry_date = _dt.datetime.fromtimestamp(mtime).date().isoformat()
+
         # mark old for deletion
         if prev and "count" in prev:
             for i in range(prev["count"]):
@@ -365,8 +369,9 @@ def build_index_files(sources: List[str]) -> int:
         for i, (entry_date, c) in enumerate(chunks):
             cid = _doc_id(src, i)
             up_meta = _sanitize_metadata(meta)
-            if entry_date:
-                up_meta["entry_date"] = entry_date
+            effective_date = entry_date or fallback_entry_date
+            if effective_date:
+                up_meta["entry_date"] = effective_date
             up_meta["chunk_index"] = i
             up_meta["id"] = cid
             # Embed key metadata into text to strengthen similarity
@@ -375,8 +380,8 @@ def build_index_files(sources: List[str]) -> int:
             header_parts = [f"title: {title_txt}", f"source: {src}"]
             if people_txt:
                 header_parts.insert(1, f"people: {people_txt}")
-            if entry_date:
-                header_parts.append(f"date: {entry_date}")
+            if effective_date:
+                header_parts.append(f"date: {effective_date}")
             header = "[" + "] [".join(header_parts) + "]"
             text_with_meta = f"{header}\n\n{c}"
             to_upsert.append((cid, up_meta, text_with_meta))
