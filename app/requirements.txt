@@ -10,6 +10,9 @@ langchain-chroma==0.2.6
 chromadb==1.1.1
 langchain-text-splitters==0.3.11
 
+# NLP for entity extraction
+spacy>=3.7
+
 # Markdown loading/front-matter
 markdown-it-py==3.0.0
 python-frontmatter==1.1.0

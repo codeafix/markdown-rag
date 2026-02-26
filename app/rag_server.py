@@ -131,7 +131,7 @@ def debug_retrieve_dated(q: str = FastQuery(...), k: int = 5):
             "rank": i+1,
             "source": d.metadata.get("source"),
             "entry_date": d.metadata.get("entry_date"),
-            "people": d.metadata.get("people"),
+            "entities": d.metadata.get("entities"),
             "title": d.metadata.get("title"),
             "snippet": d.page_content[:800],
         }
@@ -207,22 +207,34 @@ def _retrieve(q: str, k: int):
     pool = max(k * 40, 800) if (name_terms or start or end) else max(k * 10, 200)
     candidates = vs.similarity_search(q_aug, k=pool)
 
-    def _people_match(meta: dict) -> bool:
+    def _entities_match(meta: dict) -> bool:
         if not name_terms:
             return False
-        ppl = meta.get("people") or []
+        entities = meta.get("entities") or []
         # Accept either list or comma-separated string
-        if isinstance(ppl, str):
-            ppl = [s.strip() for s in ppl.split(',') if s.strip()]
-        elif not isinstance(ppl, list):
-            ppl = []
-        ppl_lower = [str(p).lower() for p in ppl]
-        # Require all name terms to match either people list or title/source
+        if isinstance(entities, str):
+            entities = [s.strip() for s in entities.split(',') if s.strip()]
+        elif not isinstance(entities, list):
+            entities = []
+
+        # Strip type prefixes like "person:Michael" -> "Michael"
+        values_lower: list[str] = []
+        for e in entities:
+            s = str(e)
+            if not s:
+                continue
+            parts = s.split(":", 1)
+            val = parts[1] if len(parts) == 2 else parts[0]
+            v = val.strip().lower()
+            if v:
+                values_lower.append(v)
+
+        # Require all name terms to match either entity values or title/source
         for t in name_terms:
             tl = t.lower()
-            name_hit = any((tl == p) or (tl in p) or (p in tl) for p in ppl_lower)
+            name_hit = any((tl == v) or (tl in v) or (v in tl) for v in values_lower)
             if not name_hit:
-                # Fallback: also check title/source when people metadata not sufficient
+                # Fallback: also check title/source when entity metadata not sufficient
                 title = str(meta.get("title") or "").lower()
                 source = str(meta.get("source") or "").lower()
                 name_hit = (tl in title) or (tl in source)
@@ -248,7 +260,7 @@ def _retrieve(q: str, k: int):
 
     # 2) Name filter (strict when provided)
     if name_terms:
-        worklist = [d for d in worklist if _people_match(d.metadata or {})]
+        worklist = [d for d in worklist if _entities_match(d.metadata or {})]
 
     # 3) If nothing left and we have name terms, try a secondary name-focused search
     if not worklist and name_terms:
@@ -259,7 +271,7 @@ def _retrieve(q: str, k: int):
             sec = []
         # Re-apply name filter, but intentionally drop the date filter
         # This avoids empty results for vague recency queries (e.g., "most recent")
-        wl2 = [d for d in (sec or []) if _people_match(d.metadata or {})]
+        wl2 = [d for d in (sec or []) if _entities_match(d.metadata or {})]
         worklist = wl2
 
     # 4) Sort by recent if requested

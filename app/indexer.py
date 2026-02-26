@@ -3,7 +3,7 @@ from langchain_ollama.embeddings import OllamaEmbeddings
 from langchain_text_splitters import MarkdownHeaderTextSplitter, RecursiveCharacterTextSplitter
 from settings import settings
 from md_loader import load_markdown_docs
-from name_parser import extract_people_from_text
+from name_parser import extract_entities_from_text
 from typing import List, Dict, Tuple
 import os, re, json, hashlib, time
 import datetime as _dt
@@ -180,7 +180,7 @@ def _iter_chunks(text: str) -> list[tuple[str | None, str]]:
     # Drop very small fragments (e.g., "TDD book:") to avoid low-signal chunks.
     return [(d, c) for (d, c) in out if len(c.strip()) >= 100]
 
-def _people_to_text(v) -> str:
+def _entities_to_text(v) -> str:
     if v is None:
         return ""
     if isinstance(v, (list, tuple)):
@@ -309,7 +309,7 @@ def build_index_files(sources: List[str]) -> int:
 
         # load and chunk
         try:
-            import frontmatter
+            import frontmatter  # type: ignore[import]
             fm = frontmatter.load(abs_path)
             text = (fm.content or "")
             from md_loader import _expand_wikilinks
@@ -317,40 +317,14 @@ def build_index_files(sources: List[str]) -> int:
             meta = dict(fm.metadata or {})
             meta.setdefault("title", Path(abs_path).stem.replace('-', ' '))
             meta["source"] = src
-            # derive people from title, source filename, and markdown headings
-            title = meta.get("title") or ""
-            fname = Path(abs_path).stem.replace('-', ' ').replace('_', ' ')
-            headings = []
-            for line in text.splitlines():
-                if line.lstrip().startswith('#'):
-                    # strip leading #'s and spaces
-                    h = line.lstrip('#').strip()
-                    if h:
-                        headings.append(h)
-            # include parent folder names as candidate blobs, normalized
-            parent_blobs = []
-            try:
-                for seg in Path(src).parts[:-1]:
-                    if seg:
-                        parent_blobs.append(seg.replace('-', ' ').replace('_', ' '))
-            except Exception:
-                pass
 
-            people = []
-            for blob in [title, fname] + parent_blobs + headings:
-                if blob:
-                    people.extend(extract_people_from_text(blob))
-            if people:
-                # unique preserve order
-                seen = set()
-                uniq = []
-                for p in people:
-                    k = p.lower()
-                    if k in seen:
-                        continue
-                    seen.add(k)
-                    uniq.append(p)
-                meta["people"] = uniq
+            # NOTE: Entity metadata is stored under the 'entities' field.
+            # If you change this logic or rename the field, you MUST run a full
+            # re-index so that existing chunks no longer carry stale 'people'
+            # metadata from older index versions.
+            entities = extract_entities_from_text(text_norm[:2000])
+            if entities:
+                meta["entities"] = entities
         except Exception:
             continue
 
@@ -376,10 +350,10 @@ def build_index_files(sources: List[str]) -> int:
             up_meta["id"] = cid
             # Embed key metadata into text to strengthen similarity
             title_txt = meta.get("title") or Path(abs_path).stem.replace('-', ' ')
-            people_txt = _people_to_text(meta.get("people"))
+            entities_txt = _entities_to_text(meta.get("entities"))
             header_parts = [f"title: {title_txt}", f"source: {src}"]
-            if people_txt:
-                header_parts.insert(1, f"people: {people_txt}")
+            if entities_txt:
+                header_parts.insert(1, f"entities: {entities_txt}")
             if effective_date:
                 header_parts.append(f"date: {effective_date}")
             header = "[" + "] [".join(header_parts) + "]"
