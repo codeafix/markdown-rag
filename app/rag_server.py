@@ -242,16 +242,13 @@ def _retrieve(q: str, k: int):
                 return False
         return True
 
+    # entry_date_ts is a Unix timestamp integer and can be used in Chroma where
+    # filters with $gte, $gt, $lte, $lt for numeric date range queries, e.g.:
+    # where={"entry_date_ts": {"$gte": int(datetime(2026, 1, 1).timestamp())}}
     def _sort_by_recent(docs):
         if not wants_recent:
             return docs
-        def _key(d):
-            try:
-                dd = datetime.fromisoformat((d.metadata or {}).get("entry_date") or "").date()
-                return dd.toordinal()
-            except Exception:
-                return -1
-        return sorted(docs, key=_key, reverse=True)
+        return sorted(docs, key=lambda d: (d.metadata or {}).get("entry_date_ts", 0), reverse=True)
 
     # 1) Date filter (strict when provided)
     worklist = candidates

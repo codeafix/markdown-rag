@@ -383,6 +383,12 @@ def build_index_files(sources: List[str]) -> int:
             effective_date = entry_date or fallback_entry_date
             if effective_date:
                 up_meta["entry_date"] = effective_date
+                try:
+                    # Unix timestamp for Chroma numeric range queries ($gte/$lte).
+                    # A full reindex is required after deploying so all chunks get entry_date_ts.
+                    up_meta["entry_date_ts"] = int(_dt.datetime.fromisoformat(effective_date).timestamp())
+                except Exception:
+                    pass
             up_meta["chunk_index"] = i
             up_meta["id"] = cid
 
