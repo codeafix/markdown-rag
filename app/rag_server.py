@@ -149,7 +149,7 @@ def _retrieve(q: str, k: int):
 
     RECENCY_TERMS = {"last", "latest", "recent", "recently", "newest", "just"}
     wants_recent = any(w in q.lower() for w in RECENCY_TERMS)
-    pool = max(k * 40, 800) if name_terms else max(k * 10, 200)
+    pool = getattr(settings, "retrieval_pool", 400)
 
     # Build optional date filter
     def _to_ts(iso: str) -> int:

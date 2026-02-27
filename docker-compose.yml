@@ -45,6 +45,7 @@ services:
       ANONYMIZED_TELEMETRY: "False"
       CHROMA_TELEMETRY: "False"
       REINDEX_ON_START: "true"
+      RETRIEVAL_POOL: "400"
     volumes:
       - ${HOST_VAULT_PATH}:/vault:ro
       - chroma_index:/index
