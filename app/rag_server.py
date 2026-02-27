@@ -22,10 +22,10 @@ app = FastAPI(title="Markdown RAG")
 
 ISO_DATE = re.compile(r"\b\d{4}-\d{2}-\d{2}\b")
 
-def _parse_date_range(q: str, tz_name: str) -> tuple[str | None, str | None, list[str]]:
+def _parse_date_range(q: str, tz_name: str) -> tuple[str | None, str | None]:
     parser = DateParser()
-    s, e, aug = parser.parse(q, tz_name)
-    return s, e, aug
+    s, e = parser.parse(q, tz_name)
+    return s, e
 
 class Query(BaseModel):
     question: str
@@ -120,8 +120,8 @@ async def health():
 
 @app.get("/debug/parse-dates")
 def debug_parse_dates(q: str = FastQuery(...)):
-    s, e, aug = _parse_date_range(q, settings.timezone)
-    return {"start": s, "end": e, "aug": aug}
+    s, e = _parse_date_range(q, settings.timezone)
+    return {"start": s, "end": e}
 
 @app.get("/debug/retrieve-dated")
 def debug_retrieve_dated(q: str = FastQuery(...), k: int = 5):
@@ -140,101 +140,45 @@ def debug_retrieve_dated(q: str = FastQuery(...), k: int = 5):
 
 def _retrieve(q: str, k: int):
     vs = get_vectorstore()
-    # Parse potential date constraints
-    start, end, iso_aug = _parse_date_range(q, settings.timezone)
+    start, end = _parse_date_range(q, settings.timezone)
 
     q_aug = q.lower()
     name_terms = extract_name_terms(q)
     if name_terms:
         q_aug = f"{q_aug}\nNames: " + ", ".join(name_terms)
-    if iso_aug:
-        # Append normalized dates to bias the embedding towards time-relevant chunks
-        if start and end and start != end:
-            q_aug = f"{q_aug}\nDates: {start} to {end}"
-        elif start and end and start == end:
-            q_aug = f"{q_aug}\nDate: {start}"
-        elif start:
-            q_aug = f"{q_aug}\nSince: {start}"
-        elif end:
-            q_aug = f"{q_aug}\nBefore: {end}"
 
-    # Try filtered search if we have constraints
-    def _in_range(meta) -> bool:
-        d = meta.get('entry_date')
-        if not d:
-            return False
-        try:
-            dd = datetime.fromisoformat(d).date()
-        except Exception:
-            return False
-        sdt = datetime.fromisoformat(start).date() if start else None
-        edt = datetime.fromisoformat(end).date() if end else None
-        if sdt and edt:
-            return sdt <= dd <= edt
-        if sdt:
-            return dd >= sdt
-        if edt:
-            return dd <= edt
-        return True
+    wants_recent = any(w in q.lower() for w in ["most recent", "latest", "recent"])
+    pool = max(k * 40, 800) if name_terms else max(k * 10, 200)
 
-    if start or end:
-        where: dict
-        if start and end:
-            where = {"entry_date": {"$gte": start, "$lte": end}}
-        elif start:
-            where = {"entry_date": {"$gte": start}}
-        else:
-            where = {"entry_date": {"$lte": end}}
-        try:
-            # Fetch a larger pool so strict in-range filtering has enough candidates
-            docs = vs.similarity_search(q_aug, k=max(k*10, 200), filter=where)
-            in_range = [d for d in (docs or []) if _in_range(d.metadata or {})]
-            if in_range:
-                return in_range[:k]
-        except Exception:
-            # if operator filters unsupported, try equality if single-day
-            if start and end and start == end:
-                try:
-                    docs = vs.similarity_search(q_aug, k=max(k*3, 50), filter={"entry_date": start})
-                    in_range = [d for d in (docs or []) if _in_range(d.metadata or {})]
-                    if in_range:
-                        return in_range[:k]
-                except Exception:
-                    pass
+    # Build optional date filter
+    def _to_ts(iso: str) -> int:
+        return int(datetime.fromisoformat(iso).timestamp())
 
-    # Wide-net retrieval, then filter by date, then by names
-    wants_recent = any(w in q.lower() for w in ["most recent", "latest", "recent"]) or (iso_aug and not start and not end)
-    pool = max(k * 40, 800) if (name_terms or start or end) else max(k * 10, 200)
-    candidates = vs.similarity_search(q_aug, k=pool)
+    where: dict | None = None
+    if start and end:
+        where = {"$and": [{"entry_date_ts": {"$gte": _to_ts(start)}}, {"entry_date_ts": {"$lte": _to_ts(end)}}]}
+    elif start:
+        where = {"entry_date_ts": {"$gte": _to_ts(start)}}
+    elif end:
+        where = {"entry_date_ts": {"$lte": _to_ts(end)}}
 
     def _entities_match(meta: dict) -> bool:
-        if not name_terms:
-            return False
         entities = meta.get("entities") or []
-        # Accept either list or comma-separated string
         if isinstance(entities, str):
             entities = [s.strip() for s in entities.split(',') if s.strip()]
         elif not isinstance(entities, list):
             entities = []
-
-        # Strip type prefixes like "person:Michael" -> "Michael"
         values_lower: list[str] = []
         for e in entities:
-            s = str(e)
-            if not s:
-                continue
-            parts = s.split(":", 1)
+            parts = str(e).split(":", 1)
             val = parts[1] if len(parts) == 2 else parts[0]
             v = val.strip().lower()
             if v:
                 values_lower.append(v)
-
-        # Require all name terms to match either entity values or title/source
         for t in name_terms:
             tl = t.lower()
             name_hit = any((tl == v) or (tl in v) or (v in tl) for v in values_lower)
             if not name_hit:
-                # Fallback: also check title/source when entity metadata not sufficient
                 title = str(meta.get("title") or "").lower()
                 source = str(meta.get("source") or "").lower()
                 name_hit = (tl in title) or (tl in source)
@@ -242,39 +186,33 @@ def _retrieve(q: str, k: int):
                 return False
         return True
 
-    # entry_date_ts is a Unix timestamp integer and can be used in Chroma where
-    # filters with $gte, $gt, $lte, $lt for numeric date range queries, e.g.:
-    # where={"entry_date_ts": {"$gte": int(datetime(2026, 1, 1).timestamp())}}
     def _sort_by_recent(docs):
         if not wants_recent:
             return docs
         return sorted(docs, key=lambda d: (d.metadata or {}).get("entry_date_ts", 0), reverse=True)
 
-    # 1) Date filter (strict when provided)
-    worklist = candidates
-    if start or end:
-        worklist = [d for d in candidates if _in_range(d.metadata or {})]
+    # 1) Similarity search with optional date filter
+    try:
+        candidates = vs.similarity_search(q_aug, k=pool, filter=where) if where else vs.similarity_search(q_aug, k=pool)
+    except Exception:
+        candidates = vs.similarity_search(q_aug, k=pool)
 
-    # 2) Name filter (strict when provided)
-    if name_terms:
-        worklist = [d for d in worklist if _entities_match(d.metadata or {})]
+    # 2) Apply name filter if name terms were found
+    worklist = [d for d in candidates if _entities_match(d.metadata or {})] if name_terms else candidates
 
-    # 3) If nothing left and we have name terms, try a secondary name-focused search
-    if not worklist and name_terms:
-        sec_q = "Names: " + ", ".join(name_terms)
+    # 3) If name filter wiped everything, retry with a name-focused query (no date filter)
+    if name_terms and not worklist:
         try:
-            sec = vs.similarity_search(sec_q, k=pool)
+            sec = vs.similarity_search("Names: " + ", ".join(name_terms), k=pool)
         except Exception:
             sec = []
-        # Re-apply name filter, but intentionally drop the date filter
-        # This avoids empty results for vague recency queries (e.g., "most recent")
-        wl2 = [d for d in (sec or []) if _entities_match(d.metadata or {})]
-        worklist = wl2
+        worklist = [d for d in sec if _entities_match(d.metadata or {})]
 
-    # 4) Sort by recent if requested
+    # 4) Sort by recency if requested
     worklist = _sort_by_recent(worklist)
 
     return worklist[:k]
+
 
 def _reindex_worker():
     global _index_running, _last_index

@@ -72,7 +72,7 @@ markdown-rag/
   - `RAG_URL`, `RAG_FILES_URL` (watcher): endpoints for full and partial reindex (defaults are fine in docker-compose).
 
 ## API Endpoints (selected)
-- `GET /debug/parse-dates?q=...` → parsed `{start,end,aug}`.
+- `GET /debug/parse-dates?q=...` → parsed `{start,end}`.
 - `GET /debug/retrieve?q=...&k=5` → top-k candidates (no dates in response).
 - `GET /debug/retrieve-dated?q=...&k=5` → candidates with metadata (source, entry_date, people, title, snippet).
 - `POST /reindex` → full incremental reindex.

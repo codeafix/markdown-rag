@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
-from typing import Tuple, List, Optional
+from typing import Optional
 import json
 import httpx
 
@@ -111,12 +111,11 @@ class DateParser:
         end = next_first - timedelta(days=1)
         return start.date().isoformat(), end.date().isoformat()
 
-    def parse(self, q: str, tz_name: str) -> tuple[Optional[str], Optional[str], List[str]]:
+    def parse(self, q: str, tz_name: str) -> tuple[Optional[str], Optional[str]]:
         tz = ZoneInfo(tz_name)
         now = datetime.now(tz)
         start: Optional[str] = None
         end: Optional[str] = None
-        iso_aug: List[str] = []
 
         # Relative phrases
         rel = RELATIVE_RE.findall(q)
@@ -125,38 +124,38 @@ class DateParser:
                 p = phrase.lower()
                 if p == 'today':
                     d = now.date().isoformat()
-                    start = start or d; end = end or d; iso_aug.append(d)
+                    start = start or d; end = end or d
                 elif p == 'yesterday':
                     d = (now - timedelta(days=1)).date().isoformat()
-                    start = start or d; end = end or d; iso_aug.append(d)
+                    start = start or d; end = end or d
                 elif p == 'recent':
                     s = (now - timedelta(days=30)).date().isoformat()
                     e = now.date().isoformat()
-                    start = start or s; end = end or e; iso_aug += [s, e]
+                    start = start or s; end = end or e
                 elif p == 'this week':
                     s, e = self._week_bounds(now)
-                    start = start or s; end = end or e; iso_aug += [s, e]
+                    start = start or s; end = end or e
                 elif p == 'last week':
                     last = now - timedelta(days=7)
                     s, e = self._week_bounds(last)
-                    start = start or s; end = end or e; iso_aug += [s, e]
+                    start = start or s; end = end or e
                 elif p == 'this month':
                     s, e = self._month_bounds(now)
-                    start = start or s; end = end or e; iso_aug += [s, e]
+                    start = start or s; end = end or e
                 elif p == 'last month':
                     this_start = now.replace(day=1)
                     prev_last = this_start - timedelta(days=1)
                     s, e = self._month_bounds(prev_last)
-                    start = start or s; end = end or e; iso_aug += [s, e]
+                    start = start or s; end = end or e
                 elif p == 'this year':
                     s = datetime(now.year, 1, 1, tzinfo=tz).date().isoformat()
                     e = datetime(now.year, 12, 31, tzinfo=tz).date().isoformat()
-                    start = start or s; end = end or e; iso_aug += [s, e]
+                    start = start or s; end = end or e
                 elif p == 'last year':
                     y = now.year - 1
                     s = datetime(y, 1, 1, tzinfo=tz).date().isoformat()
                     e = datetime(y, 12, 31, tzinfo=tz).date().isoformat()
-                    start = start or s; end = end or e; iso_aug += [s, e]
+                    start = start or s; end = end or e
 
         # Quantified relative windows
         for rex in (LAST_N_RE, IN_THE_LAST_N_RE):
@@ -172,7 +171,7 @@ class DateParser:
                     days = n * 365
                 s = (now - timedelta(days=days)).date().isoformat()
                 e = now.date().isoformat()
-                start = start or s; end = end or e; iso_aug += [s, e]
+                start = start or s; end = end or e
 
         # Word-number windows
         for m in list(LAST_WORD_N_RE.finditer(q)) + list(IN_THE_LAST_WORD_N_RE.finditer(q)):
@@ -189,13 +188,13 @@ class DateParser:
                 days = n * 365
             s = (now - timedelta(days=days)).date().isoformat()
             e = now.date().isoformat()
-            start = start or s; end = end or e; iso_aug += [s, e]
+            start = start or s; end = end or e
 
         # Fortnight (~14 days)
         if FORTNIGHT_RE.search(q):
             s = (now - timedelta(days=14)).date().isoformat()
             e = now.date().isoformat()
-            start = start or s; end = end or e; iso_aug += [s, e]
+            start = start or s; end = end or e
 
         # Explicit ranges
         m = RANGE_RE.search(q)
@@ -204,24 +203,24 @@ class DateParser:
                 a = self._norm_date_token(m.group('between_a'))
                 b = self._norm_date_token(m.group('between_b'))
                 if a and b:
-                    start = a; end = b; iso_aug += [a, b]
+                    start = a; end = b
             if m.group('from_a') and m.group('from_b'):
                 a = self._norm_date_token(m.group('from_a'))
                 b = self._norm_date_token(m.group('from_b'))
                 if a and b:
-                    start = a; end = b; iso_aug += [a, b]
+                    start = a; end = b
             if m.group('since'):
                 a = self._norm_date_token(m.group('since'))
                 if a:
-                    start = a; end = end or now.date().isoformat(); iso_aug += [a]
+                    start = a; end = end or now.date().isoformat();
             if m.group('after'):
                 a = self._norm_date_token(m.group('after'))
                 if a:
-                    start = a; iso_aug += [a]
+                    start = a;
             if m.group('before'):
                 b = self._norm_date_token(m.group('before'))
                 if b:
-                    end = b; iso_aug += [b]
+                    end = b;
 
         # Standalone explicit dates in text
         candidates = set()
@@ -233,23 +232,19 @@ class DateParser:
             if iso:
                 if not start and not end:
                     start = end = iso
-                iso_aug.append(iso)
 
         # Normalize order
         if start and end and start > end:
             start, end = end, start
 
-        # Dedup aug
-        iso_aug = list(dict.fromkeys(iso_aug))
-
         if start or end:
-            return start, end, iso_aug
+            return start, end
 
         # LLM fallback for ambiguous phrases
         try:
             prompt = (
                 "You are a date range extractor. Given the current date/time and a user query, "
-                "return a JSON object with keys start, end, aug. Use ISO YYYY-MM-DD dates or null.\n"
+                "return a JSON object with keys start, end. Use ISO YYYY-MM-DD dates or null.\n"
                 "Rules: start <= end when both present; interpret relative phrases relative to the current date/time and timezone.\n"
                 "Output ONLY JSON. No extra text.\n\n"
                 f"Current date/time: {now.strftime('%Y-%m-%d %H:%M')} {settings.timezone}\n"
@@ -273,7 +268,6 @@ class DateParser:
             obj = json.loads(data)
             s = obj.get("start")
             e = obj.get("end")
-            aug = obj.get("aug") or []
             # validate
             def _is_iso(d: Optional[str]) -> bool:
                 if not d:
@@ -287,10 +281,6 @@ class DateParser:
             e = e if _is_iso(e) else None
             if s and e and s > e:
                 s, e = e, s
-            aug_iso: List[str] = []
-            for t in aug:
-                if _is_iso(t):
-                    aug_iso.append(t)
-            return s, e, list(dict.fromkeys(aug_iso))
+            return s, e
         except Exception:
-            return None, None, []
+            return None, None
