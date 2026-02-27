@@ -22,7 +22,7 @@ MONTHS = {
 }
 
 RELATIVE_RE = re.compile(
-    r"\b(today|yesterday|this week|last week|this month|last month|this year|last year|recent)\b",
+    r"\b(today|yesterday|this week|last week|this month|last month|this year|last year|recent|recently|lately|just)\b",
     re.IGNORECASE,
 )
 
@@ -122,13 +122,13 @@ class DateParser:
         if rel:
             for phrase in rel:
                 p = phrase.lower()
-                if p == 'today':
+                if p in ['today', 'just']:
                     d = now.date().isoformat()
                     start = start or d; end = end or d
                 elif p == 'yesterday':
                     d = (now - timedelta(days=1)).date().isoformat()
                     start = start or d; end = end or d
-                elif p == 'recent':
+                elif p in ['recent', 'recently', 'lately']:
                     s = (now - timedelta(days=30)).date().isoformat()
                     e = now.date().isoformat()
                     start = start or s; end = end or e

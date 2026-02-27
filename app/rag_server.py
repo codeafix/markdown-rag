@@ -147,7 +147,8 @@ def _retrieve(q: str, k: int):
     if name_terms:
         q_aug = f"{q_aug}\nNames: " + ", ".join(name_terms)
 
-    wants_recent = any(w in q.lower() for w in ["most recent", "latest", "recent"])
+    RECENCY_TERMS = {"last", "latest", "recent", "recently", "newest", "just"}
+    wants_recent = any(w in q.lower() for w in RECENCY_TERMS)
     pool = max(k * 40, 800) if name_terms else max(k * 10, 200)
 
     # Build optional date filter
@@ -201,7 +202,7 @@ def _retrieve(q: str, k: int):
     worklist = [d for d in candidates if _entities_match(d.metadata or {})] if name_terms else candidates
 
     # 3) If name filter wiped everything, retry with a name-focused query (no date filter)
-    if name_terms and not worklist:
+    if name_terms and not worklist and not where:
         try:
             sec = vs.similarity_search("Names: " + ", ".join(name_terms), k=pool)
         except Exception:
