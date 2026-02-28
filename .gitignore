@@ -7,6 +7,11 @@ __pycache__/
 venv/
 .venv/
 
+# pytest / coverage
+.coverage
+.coverage.*
+htmlcov/
+
 # Podman / Docker
 *.pid
 *.log
