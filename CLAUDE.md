@@ -47,6 +47,11 @@ make mcp-install    # install scripts/requirements.txt for MCP server
 # Podman machine (macOS)
 make machine-init   # create Podman VM (4 CPU, 8GB, 50GB)
 make machine-start  # start existing VM
+
+# Unit tests (run locally, no container needed)
+make test-install   # one-time: create .venv + install requirements-dev.txt
+make test           # run full suite with coverage report
+.venv/bin/python -m pytest tests/test_date_parser.py -v   # single test file
 ```
 
 ## Architecture
@@ -113,6 +118,24 @@ All settings are in `app/settings.py` via env vars. Key ones:
 ## MCP server
 
 `scripts/mcp_stdio.py` exposes `search_notes(question, top_k)` via the `mcp` FastMCP library, calling `/debug/retrieve-dated` on the running RAG API. Used by Cursor (`.cursor/mcp.json` pre-configured) and Claude Desktop.
+
+## Testing
+
+Tests live in `tests/` and run **locally** (no container). Use `make test` to run them.
+
+### Infrastructure decisions
+
+- **`requirements-dev.txt`** — `pip install -r requirements-dev.txt` from project root installs everything needed. It pulls in `app/requirements.txt` plus `pytest`, `pytest-cov`, `freezegun`.
+- **`conftest.py`** (project root) — stubs `chromadb`, `spacy`, `langchain_chroma`, and `langchain_ollama` via `sys.modules` before any test module is imported. These packages use pydantic v1 native C extensions that crash on Python ≥ 3.14. Unit tests mock those dependencies at a higher level anyway so the stubs cause no loss of coverage.
+- **`pytest.ini`** — `pythonpath = app` means test files can do `from date_parser import DateParser` directly without a package prefix.
+- **`freezegun`** is used in `test_date_parser.py` to freeze time for deterministic date arithmetic.
+
+### Known behaviour quirks (confirmed by tests, don't "fix" these without updating tests)
+
+- `RANGE_RE` in `date_parser.py` does **not** correctly parse ISO date ranges — the non-greedy `.+?` before `\b` stops at the first hyphen word-boundary (yielding just the year). The standalone date extractor then sets `start=end` to one of the discovered dates.
+- `extract_name_terms` returns **individual** capitalised tokens, not multi-word names — `NAME_MULTI` is defined but unused in the function body.
+- `_expand_wikilinks`: `[[Note#Heading|Alias]]` returns `"Note"` (not `"Alias"`) because the anchor pattern `(?:#[^\]]*)` greedily consumes `|Alias`.
+- `[date]:` bracket format does **not** parse via `_extract_date_from_line` — `strip('[]')` removes the leading `[` but leaves the `]` before `:`, producing `date]:` which fails `_norm_date`.
 
 ## Important constraints
 

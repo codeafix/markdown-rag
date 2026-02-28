@@ -1,4 +1,4 @@
-.PHONY: up down logs logs-watcher pull reindex reindex-scan reindex-files reindex-status debug-retrieve debug-retrieve-dated parse-dates ask ask-stream chat shell check ps restart machine-start machine-init mcp-install
+.PHONY: up down logs logs-watcher pull reindex reindex-scan reindex-files reindex-status debug-retrieve debug-retrieve-dated parse-dates ask ask-stream chat shell check ps restart machine-start machine-init mcp-install test-install test
 
 up:
 	podman compose -f docker-compose.yml up -d --build
@@ -90,4 +90,19 @@ machine-init:
 
 mcp-install:
 	pip install -r scripts/requirements.txt || python3 -m pip install -r scripts/requirements.txt
+
+# ── unit tests ────────────────────────────────────────────────────────────────
+# Tests run locally (outside the container) against app/ source code.
+# chromadb/spacy/langchain_ollama are stubbed in conftest.py because their
+# pydantic-v1 native extensions are incompatible with the host Python.
+
+test-install:
+	# Create a local virtualenv and install all test + app dependencies.
+	python3 -m venv .venv
+	.venv/bin/pip install -q --upgrade pip
+	.venv/bin/pip install -q -r requirements-dev.txt
+
+test:
+	# Run the full test suite with per-module coverage report.
+	.venv/bin/python -m pytest tests/ --cov=app --cov-report=term-missing
 

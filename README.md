@@ -105,6 +105,35 @@ markdown-rag/
 - `make parse-dates` → inspect date parsing
 - `make ask` / `make ask-stream` → quick interactive ask / streaming
 - `make mcp-install` → install MCP deps for Cursor / Claude Desktop
+- `make test-install` → create `.venv` and install test dependencies
+- `make test` → run the unit test suite with coverage report
+
+## Testing
+
+Tests run **locally** (no container required) against the `app/` source tree.
+
+```bash
+make test-install   # one-time setup: creates .venv, installs requirements-dev.txt
+make test           # run all tests with coverage
+```
+
+### Infrastructure
+
+- **`requirements-dev.txt`** — extends `app/requirements.txt` with `pytest`, `pytest-cov`, and `freezegun`.
+- **`pytest.ini`** — sets `testpaths = tests` and `pythonpath = app` so all `app/` modules are importable without a package prefix.
+- **`conftest.py`** — stubs `chromadb`, `spacy`, `langchain_chroma`, and `langchain_ollama` via `sys.modules` before any test module is imported. These packages use pydantic v1 native extensions that are incompatible with Python ≥ 3.14; unit tests mock the infrastructure anyway so the stubs have no functional impact.
+
+### Coverage
+
+224 tests across 7 files; overall coverage ~93%:
+
+| Module | Coverage |
+|--------|----------|
+| `settings.py`, `md_loader.py` | 100% |
+| `rag_server.py` | 97% |
+| `date_parser.py`, `watcher.py` | 96% |
+| `indexer.py` | 84% |
+| `name_parser.py` | 83% |
 
 ## Troubleshooting
 - **No results for sentence queries with a name**: ensure your notes have the person name in title, filename, headings, or a parent folder (so it gets into `people`). Run `make reindex`.
