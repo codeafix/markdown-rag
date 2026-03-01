@@ -439,3 +439,68 @@ def test_run_lint_result_fields_are_serialisable():
     import json
     errors, warnings = mcp_stdio._run_lint("[[bad")
     json.dumps({"errors": errors, "warnings": warnings})  # must not raise
+
+
+# _run_lint — v0.2.0 rule unit tests (real linter, no mocking)
+
+@pytest.mark.parametrize("content,expected_rule", [
+    ("[click here](note.md)",          "std-internal-link"),
+    ("![alt text](images/photo.png)",  "std-internal-image"),
+    ("[text][ref]\n\n[ref]: http://x", "std-reference-link"),
+    ("    indented code block",        "indented-code-block"),
+    ("<div>some html</div>",           "raw-html"),
+    ("***",                            "std-horizontal-rule"),
+    ("___",                            "std-horizontal-rule"),
+])
+def test_run_lint_v02_rules_produce_errors(content, expected_rule):
+    """Each new v0.2.0 standard-markdown rule produces at least one ERROR."""
+    errors, warnings = mcp_stdio._run_lint(content)
+    rules = [e["rule"] for e in errors]
+    assert expected_rule in rules, (
+        f"Expected rule {expected_rule!r} to fire as ERROR for content {content!r}, "
+        f"got errors={errors}, warnings={warnings}"
+    )
+    assert all(e["severity"] == "ERROR" for e in errors if e["rule"] == expected_rule)
+
+
+# End-to-end integration: real bad markdown must block create_note / update_note
+# These tests do NOT mock _run_lint — they verify the full pipeline.
+
+@pytest.mark.parametrize("content,expected_rule", [
+    ("[click here](note.md)",         "std-internal-link"),
+    ("![alt](images/photo.png)",      "std-internal-image"),
+    ("    indented code block",       "indented-code-block"),
+    ("<div>raw html</div>",           "raw-html"),
+    ("***",                           "std-horizontal-rule"),
+])
+def test_create_note_real_invalid_obsidian_markdown_is_blocked(patch_vault, content, expected_rule):
+    """create_note rejects real content that violates v0.2.0 Obsidian rules."""
+    result = mcp_stdio.create_note("Claude/bad.md", content)
+    assert result.get("error") == "validation_failed", (
+        f"Expected validation_failed for rule {expected_rule!r}, got {result!r}"
+    )
+    assert any(e["rule"] == expected_rule for e in result.get("lint_errors", [])), (
+        f"Expected {expected_rule!r} in lint_errors, got {result.get('lint_errors')}"
+    )
+    assert not (patch_vault / "Claude" / "bad.md").exists(), "File must not be written on validation failure"
+
+
+@pytest.mark.parametrize("content,expected_rule", [
+    ("[click here](note.md)",         "std-internal-link"),
+    ("![alt](images/photo.png)",      "std-internal-image"),
+    ("    indented code block",       "indented-code-block"),
+    ("<div>raw html</div>",           "raw-html"),
+    ("***",                           "std-horizontal-rule"),
+])
+def test_update_note_real_invalid_obsidian_markdown_is_blocked(patch_vault, content, expected_rule):
+    """update_note rejects real content that violates v0.2.0 Obsidian rules; file unchanged."""
+    note = patch_vault / "Claude" / "note.md"
+    note.write_text("original content")
+    result = mcp_stdio.update_note("Claude/note.md", content)
+    assert result.get("error") == "validation_failed", (
+        f"Expected validation_failed for rule {expected_rule!r}, got {result!r}"
+    )
+    assert any(e["rule"] == expected_rule for e in result.get("lint_errors", [])), (
+        f"Expected {expected_rule!r} in lint_errors, got {result.get('lint_errors')}"
+    )
+    assert note.read_text() == "original content", "File must not be modified on validation failure"
