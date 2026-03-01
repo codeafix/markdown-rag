@@ -46,12 +46,33 @@ def _check_write_vault(source: str) -> "dict | None":
     """
     Return an error dict if the vault component (first path part) of source is
     not WRITE_VAULT.  Return None when the write is permitted.
+    This is a fast early-exit check on the raw path; _resolve_write_safe performs
+    the authoritative resolved check.
     """
     parts = pathlib.Path(source).parts
     vault = parts[0] if parts else ""
     if vault != WRITE_VAULT:
         return {"error": "write_not_permitted", "vault": vault}
     return None
+
+
+def _resolve_write_safe(source: str) -> "pathlib.Path | dict":
+    """
+    Resolve HOST_VAULT_PATH / source and assert the result stays within
+    HOST_VAULT_PATH / WRITE_VAULT.  Prevents directory-traversal attacks that
+    use a leading WRITE_VAULT component (e.g. 'Claude/../Other/note.md') to
+    escape into a sibling vault that _check_write_vault cannot detect on the
+    unresolved path.
+    """
+    path = _resolve_safe(source)
+    if isinstance(path, dict):
+        return path
+    write_root = (HOST_VAULT_PATH / WRITE_VAULT).resolve()
+    try:
+        path.relative_to(write_root)
+    except ValueError:
+        return {"error": "write_not_permitted", "source": source}
+    return path
 
 
 # ── lint helper ───────────────────────────────────────────────────────────────
@@ -155,7 +176,7 @@ def create_note(source: str, content: str, overwrite: bool = False) -> dict:
     if err:
         return err
 
-    path = _resolve_safe(source)
+    path = _resolve_write_safe(source)
     if isinstance(path, dict):
         return path
 
@@ -187,7 +208,7 @@ def update_note(source: str, content: str, mode: str = "overwrite") -> dict:
     if err:
         return err
 
-    path = _resolve_safe(source)
+    path = _resolve_write_safe(source)
     if isinstance(path, dict):
         return path
 
@@ -226,7 +247,7 @@ def delete_note(source: str) -> dict:
     if err:
         return err
 
-    path = _resolve_safe(source)
+    path = _resolve_write_safe(source)
     if isinstance(path, dict):
         return path
 
@@ -234,10 +255,7 @@ def delete_note(source: str) -> dict:
         return {"error": "not_found", "source": source}
 
     vault_root = (HOST_VAULT_PATH / WRITE_VAULT).resolve()
-    try:
-        rel_within_vault = path.resolve().relative_to(vault_root)
-    except ValueError:
-        return {"error": "path_traversal", "source": source}
+    rel_within_vault = path.relative_to(vault_root)
 
     trash_path = vault_root / ".trash" / rel_within_vault
     trash_path.parent.mkdir(parents=True, exist_ok=True)

@@ -30,6 +30,27 @@ def patch_vault(vault_root):
         yield vault_root
 
 
+# ── _resolve_write_safe ───────────────────────────────────────────────────────
+
+def test_resolve_write_safe_valid(patch_vault):
+    result = mcp_stdio._resolve_write_safe("Claude/note.md")
+    assert isinstance(result, pathlib.Path)
+    assert result == (patch_vault / "Claude" / "note.md").resolve()
+
+
+def test_resolve_write_safe_traversal_to_sibling_vault(patch_vault):
+    """'Claude/../Other/note.md' resolves inside HOST_VAULT_PATH but outside WRITE_VAULT."""
+    result = mcp_stdio._resolve_write_safe("Claude/../Other/note.md")
+    assert isinstance(result, dict)
+    assert result["error"] == "write_not_permitted"
+
+
+def test_resolve_write_safe_absolute_traversal(patch_vault):
+    result = mcp_stdio._resolve_write_safe("../../../etc/passwd")
+    assert isinstance(result, dict)
+    assert result["error"] in ("path_traversal", "write_not_permitted")
+
+
 # ── _resolve_safe ─────────────────────────────────────────────────────────────
 
 def test_resolve_safe_unconfigured():
@@ -283,6 +304,31 @@ def test_search_notes_raises_on_http_error():
         )
         with pytest.raises(httpx.HTTPStatusError):
             mcp_stdio.search_notes("test")
+
+
+# ── write-vault traversal bypass tests ───────────────────────────────────────
+# 'Claude/../Other/note.md' has first path component 'Claude' so it passes
+# _check_write_vault, but after resolution it lands in the Other vault.
+# _resolve_write_safe must catch this.
+
+def test_create_note_traversal_to_sibling_vault_blocked(patch_vault):
+    result = mcp_stdio.create_note("Claude/../Other/note.md", "content")
+    assert result["error"] == "write_not_permitted"
+    assert not (patch_vault / "Other" / "note.md").exists()
+
+
+def test_update_note_traversal_to_sibling_vault_blocked(patch_vault):
+    (patch_vault / "Other" / "note.md").write_text("original")
+    result = mcp_stdio.update_note("Claude/../Other/note.md", "evil")
+    assert result["error"] == "write_not_permitted"
+    assert (patch_vault / "Other" / "note.md").read_text() == "original"
+
+
+def test_delete_note_traversal_to_sibling_vault_blocked(patch_vault):
+    (patch_vault / "Other" / "note.md").write_text("original")
+    result = mcp_stdio.delete_note("Claude/../Other/note.md")
+    assert result["error"] == "write_not_permitted"
+    assert (patch_vault / "Other" / "note.md").exists()
 
 
 # ── lint validation ───────────────────────────────────────────────────────────
