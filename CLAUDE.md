@@ -128,11 +128,13 @@ All settings are in `app/settings.py` via env vars. Key ones:
 - `search_notes(question, top_k)` — semantic search via `/debug/retrieve-dated`; requires RAG stack running
 - `read_note(source)` — returns full markdown content; `source` is `vault/relative/path.md`
 - `list_notes(vault, folder="", recursive=True)` — lists `.md` paths within a vault or subfolder
-- `create_note(source, content, overwrite=False)` — creates a note; refuses to overwrite unless `overwrite=True`
-- `update_note(source, content, mode="overwrite")` — mode is `"overwrite"` or `"append"`
+- `create_note(source, content, overwrite=False)` — validates content with mdlint-obsidian before writing; aborts on ERROR severity results; returns warnings in success response
+- `update_note(source, content, mode="overwrite")` — same lint validation; mode is `"overwrite"` or `"append"`
 - `delete_note(source)` — soft-deletes by moving to `WRITE_VAULT/.trash/` preserving directory structure
 
 All file tools sanitise paths against directory traversal. Write tools (`create_note`, `update_note`, `delete_note`) refuse to operate outside `WRITE_VAULT`.
+
+**Lint validation** (`_run_lint`) runs mdlint-obsidian against `content` before any write. ERROR results block the write; WARNING results (including broken links) are included in the success response and never block writes. Broken-link checks use `HOST_VAULT_PATH` as `vault_path` so forward-link scenarios produce warnings rather than hard errors. If `mdlint-obsidian` is not installed, `_run_lint` returns `([], [])` gracefully.
 
 `mcp.server.fastmcp` is stubbed in `conftest.py` so `mcp_stdio.py` is importable in tests without installing the `mcp` package; tool functions remain plain Python callables.
 

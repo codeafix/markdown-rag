@@ -54,6 +54,31 @@ def _check_write_vault(source: str) -> "dict | None":
     return None
 
 
+# ── lint helper ───────────────────────────────────────────────────────────────
+
+def _run_lint(content: str, vault_path: "str | None" = None) -> "tuple[list[dict], list[dict]]":
+    """
+    Validate markdown content with mdlint-obsidian.
+    Returns (errors, warnings) as lists of serialisable dicts.
+    Gracefully returns ([], []) if the package is not installed.
+    """
+    try:
+        from mdlint_obsidian import validate, Severity
+    except ImportError:
+        return [], []
+    kwargs = {"vault_path": vault_path} if vault_path else {}
+    results = validate(content, **kwargs)
+    errors = [
+        {"rule": r.rule, "severity": "ERROR", "line": r.line, "message": r.message}
+        for r in results if r.severity == Severity.ERROR
+    ]
+    warnings = [
+        {"rule": r.rule, "severity": "WARNING", "line": r.line, "message": r.message}
+        for r in results if r.severity == Severity.WARNING
+    ]
+    return errors, warnings
+
+
 # ── tools ─────────────────────────────────────────────────────────────────────
 
 @mcp.tool()
@@ -138,9 +163,17 @@ def create_note(source: str, content: str, overwrite: bool = False) -> dict:
     if existed and not overwrite:
         return {"error": "already_exists", "source": source}
 
+    vault_path = str(HOST_VAULT_PATH) if HOST_VAULT_PATH.parts else None
+    lint_errors, lint_warnings = _run_lint(content, vault_path)
+    if lint_errors:
+        return {"error": "validation_failed", "lint_errors": lint_errors, "lint_warnings": lint_warnings}
+
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(content, encoding="utf-8")
-    return {"ok": True, "source": source, "action": "overwritten" if existed else "created"}
+    result = {"ok": True, "source": source, "action": "overwritten" if existed else "created"}
+    if lint_warnings:
+        result["lint_warnings"] = lint_warnings
+    return result
 
 
 @mcp.tool()
@@ -161,15 +194,24 @@ def update_note(source: str, content: str, mode: str = "overwrite") -> dict:
     if not path.exists():
         return {"error": "not_found", "source": source}
 
-    if mode == "overwrite":
-        path.write_text(content, encoding="utf-8")
-    elif mode == "append":
-        with path.open("a", encoding="utf-8") as f:
-            f.write(content)
-    else:
+    if mode not in ("overwrite", "append"):
         return {"error": "invalid_mode", "mode": mode, "valid": ["overwrite", "append"]}
 
-    return {"ok": True, "source": source, "mode": mode}
+    vault_path = str(HOST_VAULT_PATH) if HOST_VAULT_PATH.parts else None
+    lint_errors, lint_warnings = _run_lint(content, vault_path)
+    if lint_errors:
+        return {"error": "validation_failed", "lint_errors": lint_errors, "lint_warnings": lint_warnings}
+
+    if mode == "overwrite":
+        path.write_text(content, encoding="utf-8")
+    else:
+        with path.open("a", encoding="utf-8") as f:
+            f.write(content)
+
+    result = {"ok": True, "source": source, "mode": mode}
+    if lint_warnings:
+        result["lint_warnings"] = lint_warnings
+    return result
 
 
 @mcp.tool()

@@ -283,3 +283,159 @@ def test_search_notes_raises_on_http_error():
         )
         with pytest.raises(httpx.HTTPStatusError):
             mcp_stdio.search_notes("test")
+
+
+# ── lint validation ───────────────────────────────────────────────────────────
+
+_ERR = [{"rule": "unclosed-wikilink", "severity": "ERROR", "line": 1, "message": "Wikilink not closed"}]
+_WARN = [{"rule": "callout-invalid-type", "severity": "WARNING", "line": 1, "message": "Unknown callout type"}]
+_LINK_WARN = [{"rule": "broken-link", "severity": "WARNING", "line": 1, "message": "Link does not resolve"}]
+
+
+# create_note — lint integration
+
+def test_create_note_valid_content_no_lint_keys(patch_vault):
+    """Clean content produces no lint_warnings or lint_errors keys in the response."""
+    with patch("mcp_stdio._run_lint", return_value=([], [])):
+        result = mcp_stdio.create_note("Claude/clean.md", "# Clean note")
+    assert result["ok"] is True
+    assert "lint_warnings" not in result
+    assert "lint_errors" not in result
+
+
+def test_create_note_error_blocks_write(patch_vault):
+    """ERROR severity lint results abort the write; the file is not created."""
+    with patch("mcp_stdio._run_lint", return_value=(_ERR, [])):
+        result = mcp_stdio.create_note("Claude/bad.md", "[[unclosed")
+    assert result["error"] == "validation_failed"
+    assert result["lint_errors"] == _ERR
+    assert result["lint_warnings"] == []
+    assert not (patch_vault / "Claude" / "bad.md").exists()
+
+
+def test_create_note_warning_passes_with_warnings_in_response(patch_vault):
+    """WARNING severity lint results allow the write; warnings appear in the response."""
+    with patch("mcp_stdio._run_lint", return_value=([], _WARN)):
+        result = mcp_stdio.create_note("Claude/warn.md", "> [!BADTYPE]\n> body")
+    assert result["ok"] is True
+    assert result["lint_warnings"] == _WARN
+    assert (patch_vault / "Claude" / "warn.md").exists()
+
+
+def test_create_note_broken_link_warning_does_not_block(patch_vault):
+    """Broken-link warnings (WARNING) must not block creates — the note may link forward."""
+    with patch("mcp_stdio._run_lint", return_value=([], _LINK_WARN)):
+        result = mcp_stdio.create_note("Claude/draft.md", "# Draft\n\n[[NotYetCreated]]")
+    assert result["ok"] is True
+    assert result["lint_warnings"] == _LINK_WARN
+    assert (patch_vault / "Claude" / "draft.md").exists()
+
+
+def test_create_note_mixed_errors_and_warnings_blocks_write(patch_vault):
+    """When there are both ERRORs and WARNINGs, write is still blocked."""
+    with patch("mcp_stdio._run_lint", return_value=(_ERR, _WARN)):
+        result = mcp_stdio.create_note("Claude/mixed.md", "bad content")
+    assert result["error"] == "validation_failed"
+    assert result["lint_errors"] == _ERR
+    assert result["lint_warnings"] == _WARN
+    assert not (patch_vault / "Claude" / "mixed.md").exists()
+
+
+def test_create_note_lint_called_with_vault_path(patch_vault):
+    """HOST_VAULT_PATH is forwarded to _run_lint for broken-link resolution."""
+    with patch("mcp_stdio._run_lint", return_value=([], [])) as mock_lint:
+        mcp_stdio.create_note("Claude/note.md", "# Note")
+    mock_lint.assert_called_once_with("# Note", str(patch_vault))
+
+
+# update_note — lint integration
+
+def test_update_note_error_blocks_overwrite(patch_vault):
+    """ERROR severity results abort the overwrite; file content is preserved."""
+    (patch_vault / "Claude" / "note.md").write_text("original")
+    with patch("mcp_stdio._run_lint", return_value=(_ERR, [])):
+        result = mcp_stdio.update_note("Claude/note.md", "bad [[")
+    assert result["error"] == "validation_failed"
+    assert (patch_vault / "Claude" / "note.md").read_text() == "original"
+
+
+def test_update_note_warning_passes_with_warnings_in_response(patch_vault):
+    """WARNING results allow the overwrite; warnings appear in the response."""
+    (patch_vault / "Claude" / "note.md").write_text("original")
+    with patch("mcp_stdio._run_lint", return_value=([], _WARN)):
+        result = mcp_stdio.update_note("Claude/note.md", "new content")
+    assert result["ok"] is True
+    assert result["lint_warnings"] == _WARN
+    assert (patch_vault / "Claude" / "note.md").read_text() == "new content"
+
+
+def test_update_note_error_blocks_append(patch_vault):
+    """ERROR results abort the append; file content is preserved."""
+    (patch_vault / "Claude" / "note.md").write_text("original\n")
+    with patch("mcp_stdio._run_lint", return_value=(_ERR, [])):
+        result = mcp_stdio.update_note("Claude/note.md", "bad [[", mode="append")
+    assert result["error"] == "validation_failed"
+    assert (patch_vault / "Claude" / "note.md").read_text() == "original\n"
+
+
+def test_update_note_warning_passes_append(patch_vault):
+    """WARNING results allow append; warnings appear in the response."""
+    (patch_vault / "Claude" / "note.md").write_text("line1\n")
+    with patch("mcp_stdio._run_lint", return_value=([], _LINK_WARN)):
+        result = mcp_stdio.update_note("Claude/note.md", "[[Forward]]\n", mode="append")
+    assert result["ok"] is True
+    assert result["lint_warnings"] == _LINK_WARN
+    assert (patch_vault / "Claude" / "note.md").read_text() == "line1\n[[Forward]]\n"
+
+
+def test_update_note_invalid_mode_checked_before_lint(patch_vault):
+    """Invalid mode is rejected before lint runs."""
+    (patch_vault / "Claude" / "note.md").write_text("x")
+    with patch("mcp_stdio._run_lint", return_value=([], [])) as mock_lint:
+        result = mcp_stdio.update_note("Claude/note.md", "y", mode="upsert")
+    assert result["error"] == "invalid_mode"
+    mock_lint.assert_not_called()
+
+
+# _run_lint — unit tests
+
+def test_run_lint_valid_content():
+    """Valid plain markdown returns no errors or warnings."""
+    errors, warnings = mcp_stdio._run_lint("# Hello\n\nThis is a note.")
+    assert errors == []
+    assert warnings == []
+
+
+def test_run_lint_unclosed_wikilink_is_error():
+    """An unclosed wikilink produces an ERROR."""
+    errors, warnings = mcp_stdio._run_lint("[[unclosed")
+    assert len(errors) == 1
+    assert errors[0]["severity"] == "ERROR"
+    assert errors[0]["rule"] == "unclosed-wikilink"
+    assert isinstance(errors[0]["line"], int)
+    assert isinstance(errors[0]["message"], str)
+
+
+def test_run_lint_invalid_callout_is_warning():
+    """An invalid callout type produces a WARNING, not an ERROR."""
+    errors, warnings = mcp_stdio._run_lint("> [!BADTYPE]\n> content")
+    assert errors == []
+    assert len(warnings) == 1
+    assert warnings[0]["severity"] == "WARNING"
+    assert warnings[0]["rule"] == "callout-invalid-type"
+
+
+def test_run_lint_broken_link_is_warning(tmp_path):
+    """A broken wikilink with a vault_path produces a WARNING, not an ERROR."""
+    errors, warnings = mcp_stdio._run_lint("[[DoesNotExist]]", vault_path=str(tmp_path))
+    assert errors == []
+    assert len(warnings) == 1
+    assert warnings[0]["severity"] == "WARNING"
+    assert warnings[0]["rule"] == "broken-link"
+
+
+def test_run_lint_result_fields_are_serialisable():
+    """LintError dicts contain only JSON-serialisable primitive types."""
+    import json
+    errors, warnings = mcp_stdio._run_lint("[[bad")
+    json.dumps({"errors": errors, "warnings": warnings})  # must not raise

@@ -125,7 +125,7 @@ make test           # run all tests with coverage
 
 ### Coverage
 
-261 tests across 8 files; overall coverage ~93% on `app/` modules:
+277 tests across 8 files; overall coverage ~93% on `app/` modules:
 
 | Module | Coverage |
 |--------|----------|
@@ -199,11 +199,13 @@ Use your actual project and vault paths. Restart Claude Desktop.
 | `search_notes(question, top_k=5)` | Semantic search returning chunks with source, title, entry_date, people, snippet. Supports date phrases and name filtering. |
 | `read_note(source)` | Return full markdown content. `source` is `vault/relative/path.md` as returned by `search_notes`. |
 | `list_notes(vault, folder="", recursive=True)` | List `.md` paths in a vault or subfolder. Returns `vault/relative/path.md` strings. |
-| `create_note(source, content, overwrite=False)` | Create a note. Refuses to overwrite unless `overwrite=True`. Creates intermediate directories. |
-| `update_note(source, content, mode="overwrite")` | Update a note. `mode` is `"overwrite"` or `"append"`. |
+| `create_note(source, content, overwrite=False)` | Create a note. Validates content with mdlint-obsidian before writing — aborts on ERROR severity; warnings are returned alongside the success response. |
+| `update_note(source, content, mode="overwrite")` | Update a note. `mode` is `"overwrite"` or `"append"`. Same lint validation as `create_note`. |
 | `delete_note(source)` | Soft-delete: moves the note to `WRITE_VAULT/.trash/` preserving directory structure. |
 
 All file tools guard against path traversal. Write tools (`create_note`, `update_note`, `delete_note`) refuse to operate outside `WRITE_VAULT` and return structured error dicts on failure.
+
+**Lint validation** uses [mdlint-obsidian](https://github.com/codeafix/mdlint-obsidian) (22 rules across 9 categories). ERROR results block the write with `{"error": "validation_failed", "lint_errors": [...], "lint_warnings": [...]}`. WARNING results (e.g. broken links, invalid callout types) are included in the success response as `"lint_warnings"` and never block writes. `HOST_VAULT_PATH` is passed to the validator for broken-link resolution, so forward links produce warnings rather than errors.
 
 ## Notes
 - The loader **ignores** `.obsidian/` and expands `[[wikilinks]]` to their alias or target text.
