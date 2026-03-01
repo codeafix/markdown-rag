@@ -121,11 +121,11 @@ make test           # run all tests with coverage
 
 - **`requirements-dev.txt`** — extends `app/requirements.txt` with `pytest`, `pytest-cov`, and `freezegun`.
 - **`pytest.ini`** — sets `testpaths = tests` and `pythonpath = app` so all `app/` modules are importable without a package prefix.
-- **`conftest.py`** — stubs `chromadb`, `spacy`, `langchain_chroma`, and `langchain_ollama` via `sys.modules` before any test module is imported. These packages use pydantic v1 native extensions that are incompatible with Python ≥ 3.14; unit tests mock the infrastructure anyway so the stubs have no functional impact.
+- **`conftest.py`** — stubs `chromadb`, `spacy`, `langchain_chroma`, `langchain_ollama`, and `mcp.server.fastmcp` via `sys.modules` before any test module is imported. The first four use pydantic v1 native extensions that are incompatible with Python ≥ 3.14; the mcp stub makes `@mcp.tool()` a no-op so MCP tool functions remain plain Python callables in tests.
 
 ### Coverage
 
-224 tests across 7 files; overall coverage ~93%:
+261 tests across 8 files; overall coverage ~93% on `app/` modules:
 
 | Module | Coverage |
 |--------|----------|
@@ -152,9 +152,19 @@ make test           # run all tests with coverage
 
 ## MCP Server
 
-The `search_notes` tool lets Cursor or Claude Desktop agents semantically query the vector store; the agent uses the returned chunks to synthesize answers.
+`scripts/mcp_stdio.py` exposes tools for Cursor or Claude Desktop agents to search and manage vault notes directly.
 
-**Prerequisites:** RAG stack running (`make up`), `make mcp-install` (or `pip install -r scripts/requirements.txt`).
+**Prerequisites:** `make mcp-install` (installs `scripts/requirements.txt`). `search_notes` also requires the RAG stack running (`make up`).
+
+### Environment variables
+
+Set these in the MCP client config (not in `.env`):
+
+| Variable | Default | Description |
+|---|---|---|
+| `HOST_VAULT_PATH` | _(required for file tools)_ | Absolute path to the vault root — parent directory of all vault folders |
+| `WRITE_VAULT` | `Claude` | Vault name that write operations are restricted to |
+| `RAG_URL` | `http://localhost:8000` | Base URL of the running RAG API |
 
 ### Cursor
 
@@ -170,17 +180,30 @@ Add to your Claude Desktop config (e.g. `~/Library/Application Support/Claude/cl
     "markdown-rag": {
       "command": "python",
       "args": ["/absolute/path/to/markdown-rag/scripts/mcp_stdio.py"],
-      "env": { "RAG_URL": "http://localhost:8000" }
+      "env": {
+        "RAG_URL": "http://localhost:8000",
+        "HOST_VAULT_PATH": "/path/to/your/vaults",
+        "WRITE_VAULT": "Claude"
+      }
     }
   }
 }
 ```
 
-Use your actual project path. Restart Claude Desktop.
+Use your actual project and vault paths. Restart Claude Desktop.
 
-### Tool
+### Tools
 
-`search_notes(question: str, top_k: int = 5)` — semantic search returning chunks with source, title, entry_date, people, snippet. Supports date phrases ("last week") and name filtering.
+| Tool | Description |
+|---|---|
+| `search_notes(question, top_k=5)` | Semantic search returning chunks with source, title, entry_date, people, snippet. Supports date phrases and name filtering. |
+| `read_note(source)` | Return full markdown content. `source` is `vault/relative/path.md` as returned by `search_notes`. |
+| `list_notes(vault, folder="", recursive=True)` | List `.md` paths in a vault or subfolder. Returns `vault/relative/path.md` strings. |
+| `create_note(source, content, overwrite=False)` | Create a note. Refuses to overwrite unless `overwrite=True`. Creates intermediate directories. |
+| `update_note(source, content, mode="overwrite")` | Update a note. `mode` is `"overwrite"` or `"append"`. |
+| `delete_note(source)` | Soft-delete: moves the note to `WRITE_VAULT/.trash/` preserving directory structure. |
+
+All file tools guard against path traversal. Write tools (`create_note`, `update_note`, `delete_note`) refuse to operate outside `WRITE_VAULT` and return structured error dicts on failure.
 
 ## Notes
 - The loader **ignores** `.obsidian/` and expands `[[wikilinks]]` to their alias or target text.

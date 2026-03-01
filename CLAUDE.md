@@ -117,7 +117,24 @@ All settings are in `app/settings.py` via env vars. Key ones:
 
 ## MCP server
 
-`scripts/mcp_stdio.py` exposes `search_notes(question, top_k)` via the `mcp` FastMCP library, calling `/debug/retrieve-dated` on the running RAG API. Used by Cursor (`.cursor/mcp.json` pre-configured) and Claude Desktop.
+`scripts/mcp_stdio.py` exposes tools via the `mcp` FastMCP library. Used by Cursor (`.cursor/mcp.json` pre-configured) and Claude Desktop.
+
+**Env vars** (set in the MCP client config, not in `.env`):
+- `HOST_VAULT_PATH` — absolute path to the vault root directory (parent of all vault folders)
+- `WRITE_VAULT` — vault name (first path component) that write tools are restricted to (default: `Claude`)
+- `RAG_URL` — base URL for the running RAG API (default: `http://localhost:8000`)
+
+**Tools:**
+- `search_notes(question, top_k)` — semantic search via `/debug/retrieve-dated`; requires RAG stack running
+- `read_note(source)` — returns full markdown content; `source` is `vault/relative/path.md`
+- `list_notes(vault, folder="", recursive=True)` — lists `.md` paths within a vault or subfolder
+- `create_note(source, content, overwrite=False)` — creates a note; refuses to overwrite unless `overwrite=True`
+- `update_note(source, content, mode="overwrite")` — mode is `"overwrite"` or `"append"`
+- `delete_note(source)` — soft-deletes by moving to `WRITE_VAULT/.trash/` preserving directory structure
+
+All file tools sanitise paths against directory traversal. Write tools (`create_note`, `update_note`, `delete_note`) refuse to operate outside `WRITE_VAULT`.
+
+`mcp.server.fastmcp` is stubbed in `conftest.py` so `mcp_stdio.py` is importable in tests without installing the `mcp` package; tool functions remain plain Python callables.
 
 ## Testing
 
