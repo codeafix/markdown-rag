@@ -121,11 +121,11 @@ make test           # run all tests with coverage
 
 - **`requirements-dev.txt`** — extends `app/requirements.txt` with `pytest`, `pytest-cov`, and `freezegun`.
 - **`pytest.ini`** — sets `testpaths = tests` and `pythonpath = app` so all `app/` modules are importable without a package prefix.
-- **`conftest.py`** — stubs `chromadb`, `spacy`, `langchain_chroma`, `langchain_ollama`, and `mcp.server.fastmcp` via `sys.modules` before any test module is imported. The first four use pydantic v1 native extensions that are incompatible with Python ≥ 3.14; the mcp stub makes `@mcp.tool()` a no-op so MCP tool functions remain plain Python callables in tests.
+- **`conftest.py`** — stubs `chromadb`, `spacy`, `langchain_chroma`, and `langchain_ollama` via `sys.modules` before any test module is imported. These use pydantic v1 native extensions that are incompatible with Python ≥ 3.14. `fastmcp` and `obsidian-mcp-guard` are real installed packages and need no stubbing.
 
 ### Coverage
 
-277 tests across 8 files; overall coverage ~93% on `app/` modules:
+230 tests across 8 files; overall coverage ~93% on `app/` modules:
 
 | Module | Coverage |
 |--------|----------|
@@ -152,7 +152,7 @@ make test           # run all tests with coverage
 
 ## MCP Server
 
-`scripts/mcp_stdio.py` exposes tools for Cursor or Claude Desktop agents to search and manage vault notes directly.
+`scripts/mcp_stdio.py` exposes tools for Cursor or Claude Desktop agents to search and manage vault notes directly. Vault file operations are delegated to [obsidian-mcp-guard](https://github.com/codeafix/obsidian-mcp-guard).
 
 **Prerequisites:** `make mcp-install` (installs `scripts/requirements.txt`). `search_notes` also requires the RAG stack running (`make up`).
 
@@ -202,10 +202,9 @@ Use your actual project and vault paths. Restart Claude Desktop.
 | `create_note(source, content, overwrite=False)` | Create a note. Validates content with mdlint-obsidian before writing — aborts on ERROR severity; warnings are returned alongside the success response. |
 | `update_note(source, content, mode="overwrite")` | Update a note. `mode` is `"overwrite"` or `"append"`. Same lint validation as `create_note`. |
 | `delete_note(source)` | Soft-delete: moves the note to `WRITE_VAULT/.trash/` preserving directory structure. |
+| `lint_note(content)` | Pre-validate markdown without writing. Returns `{valid, errors, warnings}`. |
 
-All file tools guard against path traversal. Write tools (`create_note`, `update_note`, `delete_note`) refuse to operate outside `WRITE_VAULT` and return structured error dicts on failure.
-
-**Lint validation** uses [mdlint-obsidian](https://github.com/codeafix/mdlint-obsidian) (22 rules across 9 categories). ERROR results block the write with `{"error": "validation_failed", "lint_errors": [...], "lint_warnings": [...]}`. WARNING results (e.g. broken links, invalid callout types) are included in the success response as `"lint_warnings"` and never block writes. `HOST_VAULT_PATH` is passed to the validator for broken-link resolution, so forward links produce warnings rather than errors.
+File tools are provided by [obsidian-mcp-guard](https://github.com/codeafix/obsidian-mcp-guard) which handles path safety, write-vault isolation, and mdlint-obsidian validation.
 
 ## Notes
 - The loader **ignores** `.obsidian/` and expands `[[wikilinks]]` to their alias or target text.

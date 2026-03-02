@@ -1,7 +1,6 @@
 """Root conftest: set env vars and stub heavy infrastructure before any app module is imported."""
 import os
 import sys
-import types
 from unittest.mock import MagicMock
 
 # ── env vars (must be set before settings.py is imported) ────────────────────
@@ -61,26 +60,9 @@ class _FakeRecursiveCharacterTextSplitter:
 _lts.MarkdownHeaderTextSplitter = _FakeMarkdownHeaderTextSplitter
 _lts.RecursiveCharacterTextSplitter = _FakeRecursiveCharacterTextSplitter
 
-# ── stub mcp so scripts/mcp_stdio.py is importable without installing mcp ────
-# The @mcp.tool() decorator is made a no-op so tool functions remain directly
-# callable as plain Python functions in tests.
-_mcp_fastmcp_mod = types.ModuleType("mcp.server.fastmcp")
-
-
-class _FakeFastMCP:
-    def __init__(self, *args, **kwargs):
-        pass
-
-    def tool(self):
-        def decorator(fn):
-            return fn
-        return decorator
-
-    def run(self, *args, **kwargs):
-        pass
-
-
-_mcp_fastmcp_mod.FastMCP = _FakeFastMCP
-sys.modules.setdefault("mcp", MagicMock())
-sys.modules.setdefault("mcp.server", MagicMock())
-sys.modules["mcp.server.fastmcp"] = _mcp_fastmcp_mod
+# ── fastmcp and obsidian_mcp_guard are real installed packages ────────────────
+# mcp_stdio.py imports from fastmcp and obsidian_mcp_guard; both are installed
+# in the test venv so no stubbing is needed.  HOST_VAULT_PATH must be set so
+# create_vault_server() doesn't error at module import time.
+os.environ.setdefault("HOST_VAULT_PATH", "/tmp/test-vault-root")
+os.environ.setdefault("WRITE_VAULT", "Claude")

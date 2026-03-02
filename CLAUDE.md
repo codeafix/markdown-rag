@@ -117,26 +117,18 @@ All settings are in `app/settings.py` via env vars. Key ones:
 
 ## MCP server
 
-`scripts/mcp_stdio.py` exposes tools via the `mcp` FastMCP library. Used by Cursor (`.cursor/mcp.json` pre-configured) and Claude Desktop.
+`scripts/mcp_stdio.py` uses **fastmcp** and delegates all vault file operations to **obsidian-mcp-guard** via `mcp.mount(create_vault_server())`. Only `search_notes` is implemented locally.
 
 **Env vars** (set in the MCP client config, not in `.env`):
 - `HOST_VAULT_PATH` — absolute path to the vault root directory (parent of all vault folders)
-- `WRITE_VAULT` — vault name (first path component) that write tools are restricted to (default: `Claude`)
+- `WRITE_VAULT` — vault name that write tools are restricted to (default: `Claude`)
 - `RAG_URL` — base URL for the running RAG API (default: `http://localhost:8000`)
 
 **Tools:**
 - `search_notes(question, top_k)` — semantic search via `/debug/retrieve-dated`; requires RAG stack running
-- `read_note(source)` — returns full markdown content; `source` is `vault/relative/path.md`
-- `list_notes(vault, folder="", recursive=True)` — lists `.md` paths within a vault or subfolder
-- `create_note(source, content, overwrite=False)` — validates content with mdlint-obsidian before writing; aborts on ERROR severity results; returns warnings in success response
-- `update_note(source, content, mode="overwrite")` — same lint validation; mode is `"overwrite"` or `"append"`
-- `delete_note(source)` — soft-deletes by moving to `WRITE_VAULT/.trash/` preserving directory structure
+- `read_note`, `list_notes`, `create_note`, `update_note`, `delete_note`, `lint_note` — provided by obsidian-mcp-guard (path safety, write-vault isolation, mdlint-obsidian validation built in)
 
-All file tools sanitise paths against directory traversal. Write tools (`create_note`, `update_note`, `delete_note`) refuse to operate outside `WRITE_VAULT`.
-
-**Lint validation** (`_run_lint`) runs mdlint-obsidian against `content` before any write. ERROR results block the write; WARNING results (including broken links) are included in the success response and never block writes. Broken-link checks use `HOST_VAULT_PATH` as `vault_path` so forward-link scenarios produce warnings rather than hard errors. If `mdlint-obsidian` is not installed, `_run_lint` returns `([], [])` gracefully.
-
-`mcp.server.fastmcp` is stubbed in `conftest.py` so `mcp_stdio.py` is importable in tests without installing the `mcp` package; tool functions remain plain Python callables.
+`fastmcp` and `obsidian-mcp-guard` are real installed packages in the test venv; no stubbing needed. `conftest.py` sets `HOST_VAULT_PATH=/tmp/test-vault-root` so `create_vault_server()` doesn't error at import time.
 
 ## Testing
 
