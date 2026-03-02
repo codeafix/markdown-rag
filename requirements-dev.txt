@@ -2,4 +2,4 @@
 pytest>=8.0
 pytest-cov>=5.0
 freezegun>=1.5
-obsidian-mcp-guard @ git+https://github.com/codeafix/obsidian-mcp-guard.git@v0.1.0
+obsidian-mcp-guard>=0.1.0
