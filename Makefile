@@ -95,10 +95,10 @@ machine-init:
 # pydantic-v1 native extensions are incompatible with the host Python.
 
 test-install:
-	# Create a local virtualenv and install all test + app dependencies.
+	# Create a local virtualenv and install pinned test dependencies.
 	python3 -m venv .venv
 	.venv/bin/pip install -q --upgrade pip
-	.venv/bin/pip install -q -r requirements-dev.txt
+	.venv/bin/pip install -q -r requirements-dev.lock
 
 test:
 	# Run the full test suite with per-module coverage report.

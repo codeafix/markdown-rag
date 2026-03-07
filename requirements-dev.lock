@@ -1,0 +1,209 @@
+annotated-doc==0.0.4
+    # via typer
+annotated-types==0.7.0
+    # via pydantic
+anyio==4.12.1
+    # via
+    #   httpx
+    #   mcp
+    #   sse-starlette
+    #   starlette
+    #   watchfiles
+authlib==1.6.9
+    # via fastmcp
+certifi==2026.2.25
+    # via
+    #   httpcore
+    #   httpx
+    #   requests
+cffi==2.0.0
+    # via cryptography
+charset-normalizer==3.4.5
+    # via requests
+click==8.3.1
+    # via
+    #   typer
+    #   uvicorn
+coverage==7.13.4
+    # via pytest-cov
+cryptography==46.0.5
+    # via authlib
+exceptiongroup==1.3.1
+    # via fastmcp
+fastapi==0.114.2
+    # via -r requirements-dev.txt
+fastmcp==2.9.2
+    # via obsidian-mcp-guard
+freezegun==1.5.5
+    # via -r requirements-dev.txt
+h11==0.16.0
+    # via
+    #   httpcore
+    #   uvicorn
+httpcore==1.0.9
+    # via httpx
+httptools==0.7.1
+    # via uvicorn
+httpx==0.28.1
+    # via
+    #   -r requirements-dev.txt
+    #   fastmcp
+    #   langsmith
+    #   mcp
+httpx-sse==0.4.3
+    # via mcp
+idna==3.11
+    # via
+    #   anyio
+    #   httpx
+    #   requests
+iniconfig==2.3.0
+    # via pytest
+jsonpatch==1.33
+    # via langchain-core
+jsonpointer==3.0.0
+    # via jsonpatch
+langchain==0.3.27
+    # via -r requirements-dev.txt
+langchain-core==0.3.83
+    # via
+    #   langchain
+    #   langchain-text-splitters
+langchain-text-splitters==0.3.11
+    # via
+    #   -r requirements-dev.txt
+    #   langchain
+langsmith==0.7.14
+    # via
+    #   langchain
+    #   langchain-core
+markdown-it-py==3.0.0
+    # via
+    #   -r requirements-dev.txt
+    #   rich
+mcp==1.9.4
+    # via fastmcp
+mdlint-obsidian==0.2.6
+    # via obsidian-mcp-guard
+mdurl==0.1.2
+    # via markdown-it-py
+obsidian-mcp-guard==0.1.7
+    # via -r requirements-dev.txt
+openapi-pydantic==0.5.1
+    # via fastmcp
+orjson==3.11.7
+    # via langsmith
+packaging==25.0
+    # via
+    #   langchain-core
+    #   langsmith
+    #   pytest
+pluggy==1.6.0
+    # via
+    #   pytest
+    #   pytest-cov
+pycparser==3.0
+    # via cffi
+pydantic==2.9.2
+    # via
+    #   -r requirements-dev.txt
+    #   fastapi
+    #   langchain
+    #   langchain-core
+    #   langsmith
+    #   mcp
+    #   openapi-pydantic
+    #   pydantic-settings
+pydantic-core==2.23.4
+    # via pydantic
+pydantic-settings==2.13.1
+    # via mcp
+pygments==2.19.2
+    # via
+    #   pytest
+    #   rich
+pytest==9.0.2
+    # via
+    #   -r requirements-dev.txt
+    #   pytest-cov
+pytest-cov==7.0.0
+    # via -r requirements-dev.txt
+python-dateutil==2.9.0.post0
+    # via freezegun
+python-dotenv==1.2.2
+    # via
+    #   fastmcp
+    #   pydantic-settings
+    #   uvicorn
+python-frontmatter==1.1.0
+    # via -r requirements-dev.txt
+python-multipart==0.0.22
+    # via
+    #   -r requirements-dev.txt
+    #   mcp
+pyyaml==6.0.3
+    # via
+    #   langchain
+    #   langchain-core
+    #   mdlint-obsidian
+    #   python-frontmatter
+    #   uvicorn
+requests==2.32.5
+    # via
+    #   langchain
+    #   langsmith
+    #   requests-toolbelt
+requests-toolbelt==1.0.0
+    # via langsmith
+rich==14.3.3
+    # via
+    #   fastmcp
+    #   typer
+shellingham==1.5.4
+    # via typer
+six==1.17.0
+    # via python-dateutil
+sqlalchemy==2.0.48
+    # via langchain
+sse-starlette==3.0.3
+    # via mcp
+starlette==0.38.6
+    # via
+    #   fastapi
+    #   mcp
+tenacity==9.1.4
+    # via langchain-core
+typer==0.24.1
+    # via fastmcp
+typing-extensions==4.15.0
+    # via
+    #   fastapi
+    #   langchain-core
+    #   pydantic
+    #   pydantic-core
+    #   sqlalchemy
+    #   typing-inspection
+typing-inspection==0.4.2
+    # via pydantic-settings
+urllib3==2.6.3
+    # via requests
+uuid-utils==0.14.1
+    # via
+    #   langchain-core
+    #   langsmith
+uvicorn==0.30.6
+    # via
+    #   -r requirements-dev.txt
+    #   mcp
+uvloop==0.22.1
+    # via uvicorn
+watchdog==5.0.2
+    # via -r requirements-dev.txt
+watchfiles==1.1.1
+    # via uvicorn
+websockets==16.0
+    # via uvicorn
+xxhash==3.6.0
+    # via langsmith
+zstandard==0.25.0
+    # via langsmith

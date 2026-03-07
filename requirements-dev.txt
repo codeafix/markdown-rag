@@ -1,5 +1,16 @@
--r app/requirements.txt
-pytest>=8.0
-pytest-cov>=5.0
-freezegun>=1.5
-obsidian-mcp-guard>=0.1.0
+# Test dependencies — heavy app packages (chromadb, spacy, langchain-chroma,
+# langchain-ollama) are stubbed in conftest.py and don't need to be installed.
+fastapi==0.114.2
+uvicorn[standard]==0.30.6
+pydantic==2.9.2
+python-multipart>=0.0.9
+langchain==0.3.27
+langchain-text-splitters==0.3.11
+markdown-it-py==3.0.0
+python-frontmatter==1.1.0
+watchdog==5.0.2
+httpx>=0.28.1
+pytest==9.0.2
+pytest-cov==7.0.0
+freezegun==1.5.5
+obsidian-mcp-guard==0.1.7
