@@ -88,8 +88,6 @@ machine-start:
 machine-init:
 	podman machine init --cpus 4 --memory 8192 --disk-size 50
 
-mcp-install:
-	pip install -r scripts/requirements.txt || python3 -m pip install -r scripts/requirements.txt
 
 # ── unit tests ────────────────────────────────────────────────────────────────
 # Tests run locally (outside the container) against app/ source code.
