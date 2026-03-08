@@ -59,10 +59,3 @@ class _FakeRecursiveCharacterTextSplitter:
 
 _lts.MarkdownHeaderTextSplitter = _FakeMarkdownHeaderTextSplitter
 _lts.RecursiveCharacterTextSplitter = _FakeRecursiveCharacterTextSplitter
-
-# ── fastmcp and obsidian_mcp_guard are real installed packages ────────────────
-# mcp_stdio.py imports from fastmcp and obsidian_mcp_guard; both are installed
-# in the test venv so no stubbing is needed.  HOST_VAULT_PATH must be set so
-# create_vault_server() doesn't error at module import time.
-os.environ.setdefault("HOST_VAULT_PATH", "/tmp/test-vault-root")
-os.environ.setdefault("WRITE_VAULT", "Claude")

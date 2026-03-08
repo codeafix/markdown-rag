@@ -46,9 +46,6 @@ markdown-rag/
     watcher.py           # Vault filesystem watcher
     system_prompt.txt    # System prompt used for answering
     run.sh               # Entrypoint used by container
-  scripts/
-    mcp_stdio.py         # MCP server (stdio) for Cursor & Claude Desktop
-    requirements.txt     # mcp, httpx
   docker-compose.yml
   Makefile
   chat.sh               # Simple local chat helper
@@ -104,7 +101,6 @@ markdown-rag/
 - `make debug-retrieve` / `make debug-retrieve-dated` → inspect retrieval
 - `make parse-dates` → inspect date parsing
 - `make ask` / `make ask-stream` → quick interactive ask / streaming
-- `make mcp-install` → install MCP deps for Cursor / Claude Desktop
 - `make test-install` → create `.venv` and install test dependencies
 - `make test` → run the unit test suite with coverage report
 
@@ -121,7 +117,7 @@ make test           # run all tests with coverage
 
 - **`requirements-dev.txt`** — extends `app/requirements.txt` with `pytest`, `pytest-cov`, and `freezegun`.
 - **`pytest.ini`** — sets `testpaths = tests` and `pythonpath = app` so all `app/` modules are importable without a package prefix.
-- **`conftest.py`** — stubs `chromadb`, `spacy`, `langchain_chroma`, and `langchain_ollama` via `sys.modules` before any test module is imported. These use pydantic v1 native extensions that are incompatible with Python ≥ 3.14. `fastmcp` and `obsidian-mcp-guard` are real installed packages and need no stubbing.
+- **`conftest.py`** — stubs `chromadb`, `spacy`, `langchain_chroma`, and `langchain_ollama` via `sys.modules` before any test module is imported. These use pydantic v1 native extensions that are incompatible with Python ≥ 3.14.
 
 ### Coverage
 
@@ -149,62 +145,6 @@ make test           # run all tests with coverage
 ## Use host Ollama
 - Change `OLLAMA_BASE_URL` env for `rag` service to `http://host.containers.internal:11434`.
 - Optionally remove the `ollama` service.
-
-## MCP Server
-
-`scripts/mcp_stdio.py` exposes tools for Cursor or Claude Desktop agents to search and manage vault notes directly. Vault file operations are delegated to [obsidian-mcp-guard](https://github.com/codeafix/obsidian-mcp-guard).
-
-**Prerequisites:** `make mcp-install` (installs `scripts/requirements.txt`). `search_notes` also requires the RAG stack running (`make up`).
-
-### Environment variables
-
-Set these in the MCP client config (not in `.env`):
-
-| Variable | Default | Description |
-|---|---|---|
-| `HOST_VAULT_PATH` | _(required for file tools)_ | Absolute path to the vault root — parent directory of all vault folders |
-| `WRITE_VAULT` | `Claude` | Vault name that write operations are restricted to |
-| `RAG_URL` | `http://localhost:8000` | Base URL of the running RAG API |
-
-### Cursor
-
-`.cursor/mcp.json` is preconfigured. Ensure Cursor's workspace root is the project (so `scripts/mcp_stdio.py` resolves). Restart Cursor to load the server.
-
-### Claude Desktop
-
-Add to your Claude Desktop config (e.g. `~/Library/Application Support/Claude/claude_desktop_config.json` on macOS):
-
-```json
-{
-  "mcpServers": {
-    "markdown-rag": {
-      "command": "python",
-      "args": ["/absolute/path/to/markdown-rag/scripts/mcp_stdio.py"],
-      "env": {
-        "RAG_URL": "http://localhost:8000",
-        "HOST_VAULT_PATH": "/path/to/your/vaults",
-        "WRITE_VAULT": "Claude"
-      }
-    }
-  }
-}
-```
-
-Use your actual project and vault paths. Restart Claude Desktop.
-
-### Tools
-
-| Tool | Description |
-|---|---|
-| `search_notes(question, top_k=5)` | Semantic search returning chunks with source, title, entry_date, people, snippet. Supports date phrases and name filtering. |
-| `read_note(source)` | Return full markdown content. `source` is `vault/relative/path.md` as returned by `search_notes`. |
-| `list_notes(vault, folder="", recursive=True)` | List `.md` paths in a vault or subfolder. Returns `vault/relative/path.md` strings. |
-| `create_note(source, content, overwrite=False)` | Create a note. Validates content with mdlint-obsidian before writing — aborts on ERROR severity; warnings are returned alongside the success response. |
-| `update_note(source, content, mode="overwrite")` | Update a note. `mode` is `"overwrite"` or `"append"`. Same lint validation as `create_note`. |
-| `delete_note(source)` | Soft-delete: moves the note to `WRITE_VAULT/.trash/` preserving directory structure. |
-| `lint_note(content)` | Pre-validate markdown without writing. Returns `{valid, errors, warnings}`. |
-
-File tools are provided by [obsidian-mcp-guard](https://github.com/codeafix/obsidian-mcp-guard) which handles path safety, write-vault isolation, and mdlint-obsidian validation.
 
 ## Notes
 - The loader **ignores** `.obsidian/` and expands `[[wikilinks]]` to their alias or target text.

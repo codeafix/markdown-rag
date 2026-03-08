@@ -1,4 +1,4 @@
-.PHONY: up down logs logs-watcher pull reindex reindex-scan reindex-files reindex-status debug-retrieve debug-retrieve-dated parse-dates ask ask-stream chat shell check ps restart machine-start machine-init mcp-install test-install test
+.PHONY: up down logs logs-watcher pull reindex reindex-scan reindex-files reindex-status debug-retrieve debug-retrieve-dated parse-dates ask ask-stream chat shell check ps restart machine-start machine-init test-install test
 
 up:
 	podman compose -f docker-compose.yml up -d --build
