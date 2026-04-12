@@ -1,37 +1,20 @@
 services:
-  ollama:
-    image: ollama/ollama:latest
-    container_name: ollama
-    restart: unless-stopped
-    ports:
-      - "11434:11434"
-    volumes:
-      - ollama_models:/root/.ollama
-    # More reliable healthcheck under Podman
-    healthcheck:
-      test: ["CMD", "ollama", "list"]
-      interval: 10s
-      timeout: 5s
-      start_period: 25s
-      retries: 30
-    environment:
-      GIN_MODE: release
-
   rag:
     build:
       context: ./app
     container_name: markdown-rag
-    depends_on:
-      ollama:
-        condition: service_healthy
     environment:
       TIMEZONE: Europe/London
       TZ: Europe/London
-      OLLAMA_BASE_URL: http://ollama:11434
-      # To use host Ollama instead, override with:
-      # OLLAMA_BASE_URL: http://host.containers.internal:11434
-      GENERATOR_MODEL: ibm/granite4:tiny-h
-      EMBED_MODEL: nomic-embed-text
+      # Ollama runs on the host (Metal GPU on macOS) rather than in a container.
+      # host.containers.internal resolves to the host from inside Podman containers.
+      OLLAMA_BASE_URL: http://host.containers.internal:11434
+      # Model names default to the Makefile variables (GENERATOR_MODEL / EMBED_MODEL).
+      # When started via 'make up' those are exported into the environment and
+      # picked up here.  The :- fallbacks ensure 'podman compose up' works directly
+      # without going through make.
+      GENERATOR_MODEL: ${GENERATOR_MODEL:-gemma4-26b-q4xl:latest}
+      EMBED_MODEL: ${EMBED_MODEL:-nomic-embed-text}
       VAULT_PATH: /vault
       INDEX_PATH: /index/chroma
       SYSTEM_PROMPT_FILE: /app/system_prompt.txt
@@ -69,5 +52,4 @@ services:
     command: ["python", "watcher.py"]
 
 volumes:
-  ollama_models:
   chroma_index:
