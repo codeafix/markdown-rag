@@ -368,8 +368,18 @@ def build_index_files(sources: List[str]) -> int:
         chunks = _iter_chunks(text_norm)
         total_chunks += len(chunks)
 
-        # Fallback date for undated chunks: file mtime as ISO date.
-        fallback_entry_date = _dt.datetime.fromtimestamp(mtime).date().isoformat()
+        # Fallback date for undated chunks: frontmatter date > file mtime.
+        # PyYAML parses YAML date fields as datetime.date objects; also accept strings.
+        _fm_date = meta.get("date")
+        if isinstance(_fm_date, (_dt.date, _dt.datetime)):
+            fallback_entry_date = _fm_date.date().isoformat() if isinstance(_fm_date, _dt.datetime) else _fm_date.isoformat()
+        elif isinstance(_fm_date, str) and _fm_date.strip():
+            try:
+                fallback_entry_date = _dt.date.fromisoformat(_fm_date.strip()).isoformat()
+            except ValueError:
+                fallback_entry_date = _dt.datetime.fromtimestamp(mtime).date().isoformat()
+        else:
+            fallback_entry_date = _dt.datetime.fromtimestamp(mtime).date().isoformat()
 
         # mark old for deletion
         if prev and "count" in prev:
@@ -418,6 +428,9 @@ def build_index_files(sources: List[str]) -> int:
                 header_parts.insert(1, f"entities: {entities_txt}")
             if effective_date:
                 header_parts.append(f"date: {effective_date}")
+            tags_txt = up_meta.get("tags") or ""
+            if tags_txt:
+                header_parts.append(f"tags: {tags_txt}")
             header = "[" + "] [".join(header_parts) + "]"
             text_with_meta = f"{header}\n\n{c}"
             to_upsert.append((cid, up_meta, text_with_meta))
