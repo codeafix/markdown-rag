@@ -15,7 +15,7 @@ class Settings(BaseModel):
     num_ctx: int = int(os.getenv("NUM_CTX", "8192"))
     watch_debounce_secs: float = float(os.getenv("WATCH_DEBOUNCE_SECS", "3"))
     timezone: str = os.getenv("TIMEZONE", "Europe/London")
-    num_predict: int = int(os.getenv("NUM_PREDICT", "256"))
+    num_predict: int = int(os.getenv("NUM_PREDICT", "-1"))
     retrieval_pool: int = int(os.getenv("RETRIEVAL_POOL", "400"))
 
     def system_prompt(self) -> str:

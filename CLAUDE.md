@@ -4,10 +4,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Stack overview
 
-Containerised RAG system for Obsidian Markdown vaults. Uses **Podman** (not Docker) via `podman compose`. Three services:
+Containerised RAG system for Obsidian Markdown vaults. Uses **Podman** (not Docker) via `podman compose`. Two services:
 - **rag** (`app/`) — FastAPI server + indexer, built from `app/Dockerfile`
-- **ollama** — local LLM and embedding model server
 - **watcher** (`app/watcher.py`) — watchdog sidecar that posts changed paths to the RAG API
+
+Ollama runs **on the host** (Metal GPU on macOS); containers reach it via `host.containers.internal:11434`. There is no `ollama` container service.
 
 Embeddings and chunks persist in **Chroma** (`/index/chroma` volume). Index state (mtimes + chunk counts per file) is tracked in `index_state.json` alongside the Chroma DB.
 
@@ -22,8 +23,8 @@ make logs-watcher   # tail watcher logs
 make ps             # show container status
 make shell          # bash into rag container
 
-# First-time model pull (after make up)
-make pull
+# First-time model pull (run before make up)
+make ollama-bootstrap
 
 # Indexing
 make reindex         # full incremental reindex
@@ -32,14 +33,14 @@ make reindex-files   # partial reindex for specific files (prompts for paths)
 make reindex-status  # check last reindex result
 
 # Debugging retrieval
-make debug-retrieve        # vector search only, no metadata
-make debug-retrieve-dated  # vector search with metadata (date, entities, etc.)
+make retrieve              # vector search only, no metadata
+make retrieve-dated        # vector search with metadata (date, entities, etc.)
 make parse-dates           # test date parsing on a query
 
 # Querying
 make ask            # single question, blocking
 make ask-stream     # streaming answer
-./chat.sh           # interactive chat loop
+make chat           # interactive chat loop (python3 chat.py)
 
 # MCP
 make mcp-install    # install scripts/requirements.txt for MCP server
@@ -59,7 +60,7 @@ make test           # run full suite with coverage report
 ### Data flow
 
 1. **Indexing**: `.md` files → `md_loader.py` (front-matter parse + wikilink expansion) → `indexer.py` date-heading split → markdown header split → sentence chunking → char fallback → spaCy entity extraction → Chroma upsert
-2. **Query**: question → `date_parser.py` (regex rules, LLM fallback) + `name_parser.py` (heuristic regex, prefers quoted names) → augmented vector search with Chroma `where` filter → entity post-filter → optional recency sort → Ollama generate
+2. **Query**: question → `date_parser.py` (regex rules, `dateparser` library fallback) + `name_parser.py` (heuristic regex, prefers quoted names) → augmented vector search with Chroma `where` filter → entity post-filter → optional recency sort → Ollama generate
 
 ### Key files in `app/`
 
@@ -67,7 +68,7 @@ make test           # run full suite with coverage report
 |------|------|
 | `rag_server.py` | FastAPI app; `_retrieve()` is the core retrieval function |
 | `indexer.py` | `build_index()` / `build_index_files()` + chunking logic; `_iter_chunks()` is the main pipeline |
-| `date_parser.py` | `DateParser.parse()` — regex-first, LLM fallback for ambiguous phrases |
+| `date_parser.py` | `DateParser.parse()` — regex-first, `dateparser` library fallback for ambiguous phrases |
 | `name_parser.py` | `extract_entities_from_text()` (spaCy, used at index time); `extract_name_terms()` (heuristic regex, used at query time) |
 | `md_loader.py` | `load_markdown_docs()` + `_expand_wikilinks()` |
 | `settings.py` | All config via env vars; all consumed through `settings` singleton |
@@ -86,12 +87,13 @@ make test           # run full suite with coverage report
 
 - `source` — vault-relative path
 - `title` — from front matter or filename
-- `entry_date` — ISO date from date heading or file mtime fallback
+- `entry_date` — ISO date from date heading > frontmatter `date` field > file mtime (priority order)
 - `entry_date_ts` — Unix timestamp of `entry_date` (for Chroma `$gte`/`$lte` numeric filters)
 - `entities` — comma-separated `prefix:Value` strings from spaCy NER (PERSON, ORG, GPE, WORK_OF_ART), merged from file-level and chunk-level extraction
+- `tags` — from frontmatter `tags` field (list or string, normalised to space-separated string)
 - `chunk_index` — position within the file
 
-Each chunk's embedded text is prefixed with `[title: ...] [entities: ...] [source: ...] [date: ...]` to strengthen metadata relevance in vector search.
+Each chunk's embedded text is prefixed with `[title: ...] [entities: ...] [source: ...] [date: ...] [tags: ...]` to strengthen metadata relevance in vector search.
 
 ### Retrieval logic (`rag_server._retrieve`)
 
@@ -125,7 +127,7 @@ All settings are in `app/settings.py` via env vars. Key ones:
 - `RAG_URL` — base URL for the running RAG API (default: `http://localhost:8000`)
 
 **Tools:**
-- `search_notes(question, top_k)` — semantic search via `/debug/retrieve-dated`; requires RAG stack running
+- `search_notes(question, top_k)` — semantic search via `/retrieve/dated`; requires RAG stack running
 - `read_note`, `list_notes`, `create_note`, `update_note`, `delete_note`, `lint_note` — provided by obsidian-mcp-guard (path safety, write-vault isolation, mdlint-obsidian validation built in)
 
 `fastmcp` and `obsidian-mcp-guard` are real installed packages in the test venv; no stubbing needed. `conftest.py` sets `HOST_VAULT_PATH=/tmp/test-vault-root` so `create_vault_server()` doesn't error at import time.
@@ -154,3 +156,4 @@ Tests live in `tests/` and run **locally** (no container). Use `make test` to ru
 - `entry_date_ts` was added later; a full reindex is needed on existing installations to backfill it.
 - Chroma persistence is automatic (`PersistentClient`); do not call `.persist()` explicitly.
 - The watcher uses `RAG_FILES_URL` to call `/reindex/files`; if that fails it falls back to `/reindex` (full).
+- `NUM_PREDICT` defaults to `-1` (unlimited). Do **not** set a low value (e.g. 256 or 800) — thinking models (like gemma4) consume their entire token budget reasoning before generating any response, so a low cap produces empty answers.

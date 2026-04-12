@@ -109,34 +109,34 @@ def test_reindex_status():
     assert data["last"]["chunks"] == 42
 
 
-# ── /debug/parse-dates ────────────────────────────────────────────────────────
+# ── /utils/parse-dates ────────────────────────────────────────────────────────
 
-def test_debug_parse_dates_today():
+def test_parse_dates_today():
     with patch("rag_server._parse_date_range", return_value=("2025-01-15", "2025-01-15")):
-        resp = client.get("/debug/parse-dates", params={"q": "today"})
+        resp = client.get("/utils/parse-dates", params={"q": "today"})
     assert resp.status_code == 200
     assert resp.json() == {"start": "2025-01-15", "end": "2025-01-15"}
 
 
-def test_debug_parse_dates_no_date():
+def test_parse_dates_no_date():
     with patch("rag_server._parse_date_range", return_value=(None, None)):
-        resp = client.get("/debug/parse-dates", params={"q": "general query"})
+        resp = client.get("/utils/parse-dates", params={"q": "general query"})
     assert resp.json() == {"start": None, "end": None}
 
 
-def test_debug_parse_dates_missing_param():
-    resp = client.get("/debug/parse-dates")
+def test_parse_dates_missing_param():
+    resp = client.get("/utils/parse-dates")
     assert resp.status_code == 422
 
 
-# ── /debug/retrieve ───────────────────────────────────────────────────────────
+# ── /retrieve ─────────────────────────────────────────────────────────────────
 
-def test_debug_retrieve():
+def test_retrieve():
     doc = _make_doc()
     mock_vs = MagicMock()
     mock_vs.similarity_search.return_value = [doc]
     with patch("rag_server.get_vectorstore", return_value=mock_vs):
-        resp = client.get("/debug/retrieve", params={"q": "test query", "k": 1})
+        resp = client.get("/retrieve", params={"q": "test query", "k": 1})
     assert resp.status_code == 200
     results = resp.json()
     assert len(results) == 1
@@ -144,36 +144,42 @@ def test_debug_retrieve():
     assert results[0]["source"] == "note.md"
 
 
-def test_debug_retrieve_missing_q():
-    resp = client.get("/debug/retrieve")
+def test_retrieve_missing_q():
+    resp = client.get("/retrieve")
     assert resp.status_code == 422
 
 
-# ── /debug/retrieve-dated ─────────────────────────────────────────────────────
+# ── /retrieve/dated ───────────────────────────────────────────────────────────
 
-def test_debug_retrieve_dated():
+def test_retrieve_dated():
     doc = _make_doc()
-    with patch("rag_server._retrieve", return_value=[doc]):
-        resp = client.get("/debug/retrieve-dated", params={"q": "Alice notes", "k": 5})
+    with patch("rag_server._retrieve", return_value=[doc]), \
+         patch("rag_server._parse_date_range", return_value=("2025-01-01", "2025-01-31")):
+        resp = client.get("/retrieve/dated", params={"q": "Alice notes", "k": 5})
     assert resp.status_code == 200
-    results = resp.json()
+    body = resp.json()
+    assert body["filter"]["start"] == "2025-01-01"
+    assert body["filter"]["end"] == "2025-01-31"
+    assert "start_ts" in body["filter"]
+    assert "end_ts" in body["filter"]
+    results = body["results"]
     assert len(results) == 1
     assert results[0]["entities"] == "person:Alice"
     assert results[0]["entry_date"] == "2025-01-15"
 
 
-# ── /debug/split-by-date ─────────────────────────────────────────────────────
+# ── /utils/split-by-date ──────────────────────────────────────────────────────
 
-def test_debug_split_by_date_form_text():
-    resp = client.post("/debug/split-by-date", data={"text": "## 2025-01-15\n\nSome content here."})
+def test_split_by_date_form_text():
+    resp = client.post("/utils/split-by-date", data={"text": "## 2025-01-15\n\nSome content here."})
     assert resp.status_code == 200
     data = resp.json()
     assert "total_sections" in data
     assert data["total_sections"] >= 1
 
 
-def test_debug_split_by_date_no_input():
-    resp = client.post("/debug/split-by-date")
+def test_split_by_date_no_input():
+    resp = client.post("/utils/split-by-date")
     assert resp.status_code == 200
     assert "error" in resp.json()
 
@@ -248,9 +254,11 @@ def test_query_stream():
     docs = [_make_doc()]
 
     async def fake_aiter_lines():
-        yield '{"response": "Hello"}'
-        yield '{"response": " world"}'
-        yield '{"response": "", "done": true}'
+        # Simulate thinking phase followed by content (Ollama /api/chat format)
+        yield '{"message": {"role": "assistant", "content": "", "thinking": "Let me think"}, "done": false}'
+        yield '{"message": {"role": "assistant", "content": "Hello"}, "done": false}'
+        yield '{"message": {"role": "assistant", "content": " world"}, "done": false}'
+        yield '{"message": {"role": "assistant", "content": ""}, "done": true}'
 
     mock_stream_resp = MagicMock()
     mock_stream_resp.__aenter__ = AsyncMock(return_value=mock_stream_resp)
@@ -268,6 +276,8 @@ def test_query_stream():
         resp = client.post("/query/stream", json={"question": "test"})
 
     assert resp.status_code == 200
+    # thinking tokens are wrapped in <think>…</think>; content tokens are plain
+    assert "<think>" in resp.text
     assert "Hello" in resp.text
     assert " world" in resp.text
 
@@ -708,9 +718,9 @@ def test_query_stream_non_json_line_passthrough():
     docs = [_make_doc()]
 
     async def fake_aiter_lines():
-        yield '{"response": "Good "}'
+        yield '{"message": {"role": "assistant", "content": "Good "}, "done": false}'
         yield 'not-json-at-all'
-        yield '{"response": "answer"}'
+        yield '{"message": {"role": "assistant", "content": "answer"}, "done": false}'
 
     mock_stream_resp = MagicMock()
     mock_stream_resp.__aenter__ = AsyncMock(return_value=mock_stream_resp)
@@ -753,12 +763,12 @@ def test_query_stream_general_exception():
     assert "Error" in resp.text or "connection reset" in resp.text
 
 
-# ── debug_split_by_date with file upload ─────────────────────────────────────
+# ── /utils/split-by-date file upload ─────────────────────────────────────────
 
-def test_debug_split_by_date_file_upload():
+def test_split_by_date_file_upload():
     content = b"## 2025-01-15\n\nMeeting notes here."
     resp = client.post(
-        "/debug/split-by-date",
+        "/utils/split-by-date",
         files={"file": ("note.md", content, "text/markdown")},
     )
     assert resp.status_code == 200

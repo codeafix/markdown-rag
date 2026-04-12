@@ -4,10 +4,11 @@ import re
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 from typing import Optional
-import json
-import httpx
 
-from settings import settings
+try:
+    import dateparser  # type: ignore[import]
+except ImportError:  # pragma: no cover
+    dateparser = None  # type: ignore[assignment]
 
 ISO_DATE = re.compile(r"\b\d{4}-\d{2}-\d{2}\b")
 DMY_SLASH = re.compile(r"\b(\d{1,2})/(\d{1,2})/(\d{4})\b")
@@ -48,6 +49,15 @@ IN_THE_LAST_WORD_N_RE = re.compile(
     re.IGNORECASE,
 )
 FORTNIGHT_RE = re.compile(r"\b(?:last|past|previous)?\s*fortnight\b", re.IGNORECASE)
+
+_MON = r"(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:t(?:ember)?)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)"
+# Matches "in April", "during March 2025", "April 2025" (year required when no preposition,
+# to avoid treating the auxiliary verb "may" as a month name).
+MONTH_ONLY_RE = re.compile(
+    r"(?:(?:in|during|for|of)\s+(?P<mp>" + _MON + r")(?:\s+(?P<yp>\d{4}))?(?!\s*\d)"
+    r"|(?P<mn>" + _MON + r")\s+(?P<yn>\d{4}))",
+    re.IGNORECASE,
+)
 
 RANGE_RE = re.compile(
     r"\b(?:between\s+(?P<between_a>.+?)\s+and\s+(?P<between_b>.+?)|from\s+(?P<from_a>.+?)\s+(?:to|until)\s+(?P<from_b>.+?)|since\s+(?P<since>.+?)|after\s+(?P<after>.+?)|before\s+(?P<before>.+?))\b",
@@ -233,6 +243,17 @@ class DateParser:
                 if not start and not end:
                     start = end = iso
 
+        # Bare month name: "in April", "during March 2025", "April 2025"
+        if not start and not end:
+            mm = MONTH_ONLY_RE.search(q)
+            if mm:
+                mon_str = mm.group('mp') or mm.group('mn')
+                yr_str = mm.group('yp') or mm.group('yn')
+                mon = self._parse_month(mon_str)
+                yr = int(yr_str) if yr_str else now.year
+                if mon:
+                    start, end = self._month_bounds(datetime(yr, mon, 1, tzinfo=tz))
+
         # Normalize order
         if start and end and start > end:
             start, end = end, start
@@ -240,47 +261,23 @@ class DateParser:
         if start or end:
             return start, end
 
-        # LLM fallback for ambiguous phrases
+        # dateparser fallback for phrases not covered by the regex rules above
+        # (e.g. "a few weeks ago", "early March", "Q1 2025", "last Tuesday").
+        # dateparser is pure-Python — no network call, no model load.
         try:
-            prompt = (
-                "You are a date range extractor. Given the current date/time and a user query, "
-                "return a JSON object with keys start, end. Use ISO YYYY-MM-DD dates or null.\n"
-                "Rules: start <= end when both present; interpret relative phrases relative to the current date/time and timezone.\n"
-                "Output ONLY JSON. No extra text.\n\n"
-                f"Current date/time: {now.strftime('%Y-%m-%d %H:%M')} {settings.timezone}\n"
-                f"Query: {q}\n"
-            )
-            payload = {
-                "model": settings.generator_model,
-                "prompt": prompt,
-                "options": {
-                    "temperature": 0,
-                    "num_ctx": getattr(settings, "num_ctx", 2048),
-                    "num_predict": 128,
-                    "keep_alive": "5m",
+            parsed = dateparser.parse(
+                q,
+                settings={
+                    "PREFER_DATES_FROM": "past",
+                    "PREFER_DAY_OF_MONTH": "first",
+                    "RETURN_AS_TIMEZONE_AWARE": True,
+                    "TIMEZONE": tz_name,
+                    "TO_TIMEZONE": tz_name,
                 },
-                "stream": False,
-            }
-            with httpx.Client(base_url=settings.ollama_base_url, timeout=20.0) as client:
-                r = client.post("/api/generate", json=payload)
-                r.raise_for_status()
-                data = r.json().get("response", "{}")
-            obj = json.loads(data)
-            s = obj.get("start")
-            e = obj.get("end")
-            # validate
-            def _is_iso(d: Optional[str]) -> bool:
-                if not d:
-                    return False
-                try:
-                    datetime.fromisoformat(d)
-                    return True
-                except Exception:
-                    return False
-            s = s if _is_iso(s) else None
-            e = e if _is_iso(e) else None
-            if s and e and s > e:
-                s, e = e, s
-            return s, e
+            )
+            if parsed:
+                d = parsed.date().isoformat()
+                return d, d
         except Exception:
-            return None, None
+            pass
+        return None, None

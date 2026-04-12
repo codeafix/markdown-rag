@@ -13,7 +13,9 @@ from pathlib import Path
 import os
 import httpx, json, re
 
-import threading, time
+import threading, time, logging
+
+logger = logging.getLogger(__name__)
 _index_lock = threading.Lock()
 _index_running = False
 _last_index = {"ok": False, "started": 0, "finished": 0, "chunks": 0, "error": "", "mode": "", "files": []}
@@ -52,18 +54,19 @@ def reindex_files(body: ReindexFiles):
     threading.Thread(target=_reindex_worker_files, args=(body.files,), daemon=True).start()
     return {"status": "started", "files": body.files}
 
-@app.get("/debug/retrieve")
-def debug_retrieve(q: str = FastQuery(...), k: int = 5):
+@app.get("/retrieve")
+def retrieve(q: str = FastQuery(...), k: int = 5):
     vs = get_vectorstore()
     docs = vs.similarity_search(q, k=k)
     return [
-        {"rank": i+1, "source": d.metadata.get("source"), "title": d.metadata.get("title"), "entry_date": d.metadata.get("entry_date"),
+        {"rank": i+1, "source": d.metadata.get("source"), "title": d.metadata.get("title"),
+         "entry_date": d.metadata.get("entry_date"), "entry_date_ts": d.metadata.get("entry_date_ts"),
          "snippet": d.page_content[:800]}
         for i, d in enumerate(docs)
     ]
 
-@app.post("/debug/split-by-date")
-async def debug_split_by_date(
+@app.post("/utils/split-by-date")
+async def split_by_date(
     text: str = Form(None),
     file: UploadFile | None = File(None),
 ):
@@ -118,25 +121,36 @@ async def health():
     now = _now_info()
     return {"ok": True, "ollama_version": version, "now":now, "sample": out[:80]}
 
-@app.get("/debug/parse-dates")
-def debug_parse_dates(q: str = FastQuery(...)):
+@app.get("/utils/parse-dates")
+def parse_dates(q: str = FastQuery(...)):
     s, e = _parse_date_range(q, settings.timezone)
     return {"start": s, "end": e}
 
-@app.get("/debug/retrieve-dated")
-def debug_retrieve_dated(q: str = FastQuery(...), k: int = 5):
+@app.get("/retrieve/dated")
+def retrieve_dated(q: str = FastQuery(...), k: int = 5):
+    start, end = _parse_date_range(q, settings.timezone)
+    def _to_ts(iso: str) -> int:
+        return int(datetime.fromisoformat(iso).timestamp())
     docs = _retrieve(q, k)
-    return [
-        {
-            "rank": i+1,
-            "source": d.metadata.get("source"),
-            "entry_date": d.metadata.get("entry_date"),
-            "entities": d.metadata.get("entities"),
-            "title": d.metadata.get("title"),
-            "snippet": d.page_content[:800],
-        }
-        for i, d in enumerate(docs)
-    ]
+    return {
+        "filter": {
+            "start": start, "end": end,
+            "start_ts": _to_ts(start) if start else None,
+            "end_ts": _to_ts(end) if end else None,
+        },
+        "results": [
+            {
+                "rank": i+1,
+                "source": d.metadata.get("source"),
+                "entry_date": d.metadata.get("entry_date"),
+                "entry_date_ts": d.metadata.get("entry_date_ts"),
+                "entities": d.metadata.get("entities"),
+                "title": d.metadata.get("title"),
+                "snippet": d.page_content[:800],
+            }
+            for i, d in enumerate(docs)
+        ],
+    }
 
 def _retrieve(q: str, k: int):
     vs = get_vectorstore()
@@ -195,7 +209,9 @@ def _retrieve(q: str, k: int):
     # 1) Similarity search with optional date filter
     try:
         candidates = vs.similarity_search(q_aug, k=pool, filter=where) if where else vs.similarity_search(q_aug, k=pool)
-    except Exception:
+    except Exception as exc:
+        logger.warning("Date filter query failed (%s) — falling back to unfiltered. "
+                       "If entry_date_ts is missing from chunks, run make reindex.", exc)
         candidates = vs.similarity_search(q_aug, k=pool)
 
     # 2) Apply name filter if name terms were found
@@ -330,12 +346,15 @@ async def _generate(prompt: str) -> str:
     payload = {
         "model": settings.generator_model,
         "prompt": prompt,
-        "options": {"temperature": settings.temperature, "num_ctx": settings.num_ctx},
+        "options": {
+            "temperature": settings.temperature,
+            "num_ctx": settings.num_ctx,
+            "num_predict": settings.num_predict,
+        },
         "stream": False,
-        "num_predict": getattr(settings, "num_predict", 256),
         "keep_alive": "10m",
     }
-    async with httpx.AsyncClient(base_url=settings.ollama_base_url, timeout=120) as client:
+    async with httpx.AsyncClient(base_url=settings.ollama_base_url, timeout=600) as client:
         r = await client.post("/api/generate", json=payload)
         r.raise_for_status()
         data = r.json()
@@ -418,21 +437,23 @@ async def query_stream(q: Query):
 
     payload = {
         "model": settings.generator_model,
-        "prompt": prompt,
+        "messages": [
+            {"role": "user", "content": prompt}
+        ],
         "options": {
             "temperature": settings.temperature,
             "num_ctx": settings.num_ctx,
-            # guard if you didn't add this to settings yet
-            "num_predict": getattr(settings, "num_predict", 256),
-            "keep_alive": "10m",
+            "num_predict": settings.num_predict,
         },
         "stream": True,
+        "keep_alive": "10m",
     }
 
     async def gen():
+        thinking_open = False  # tracks whether we've opened a <think> block
         try:
             async with httpx.AsyncClient(base_url=settings.ollama_base_url, timeout=timeout) as client:
-                async with client.stream("POST", "/api/generate", json=payload) as r:
+                async with client.stream("POST", "/api/chat", json=payload) as r:
                     r.raise_for_status()
                     async for line in r.aiter_lines():
                         if not line:
@@ -440,14 +461,26 @@ async def query_stream(q: Query):
                         # Ollama streams one JSON object per line
                         try:
                             obj = json.loads(line)
-                            chunk = obj.get("response")
-                            if chunk:
-                                # yield raw text chunks immediately
-                                yield chunk
-                            # you could inspect obj.get("done") here if you want
+                            msg = obj.get("message", {})
+                            thinking = msg.get("thinking")
+                            content = msg.get("content")
+                            # Wrap thinking tokens in <think>…</think> so callers
+                            # can strip or display them; open/close tags emitted once.
+                            if thinking:
+                                if not thinking_open:
+                                    yield "<think>"
+                                    thinking_open = True
+                                yield thinking
+                            else:
+                                if thinking_open:
+                                    yield "</think>\n"
+                                    thinking_open = False
+                                if content:
+                                    yield content
                         except json.JSONDecodeError:
-                            # if a non-JSON line sneaks in, just pass it through
                             yield line
+            if thinking_open:
+                yield "</think>\n"
         except httpx.ReadTimeout:
             yield "\n\n[Warning] generation timed out; partial output shown.\n"
         except Exception as e:

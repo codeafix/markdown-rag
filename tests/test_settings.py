@@ -17,7 +17,7 @@ def test_default_values():
     assert s.temperature == float(os.getenv("TEMPERATURE", "0.0"))
     assert s.num_ctx == int(os.getenv("NUM_CTX", "8192"))
     assert s.timezone == os.getenv("TIMEZONE", "Europe/London")
-    assert s.num_predict == int(os.getenv("NUM_PREDICT", "256"))
+    assert s.num_predict == int(os.getenv("NUM_PREDICT", "-1"))
     assert s.retrieval_pool == int(os.getenv("RETRIEVAL_POOL", "400"))
 
 

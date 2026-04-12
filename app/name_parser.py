@@ -120,6 +120,13 @@ STOP = {
     "His",
     "Her",
     "Their",
+    # month names (full and abbreviated) — prevent date words being treated as names
+    "January", "February", "March", "April", "May", "June",
+    "July", "August", "September", "October", "November", "December",
+    "Jan", "Feb", "Mar", "Apr", "Jun", "Jul", "Aug", "Sep", "Sept", "Oct", "Nov", "Dec",
+    # day names
+    "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday",
+    "Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun",
     # common non-name tokens seen in titles
     "Notes",
     "Note",

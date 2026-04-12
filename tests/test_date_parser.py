@@ -220,95 +220,46 @@ def test_order_normalised(parser):
 # ── no date ───────────────────────────────────────────────────────────────────
 
 @freeze_time(FROZEN)
-def test_no_date_no_llm(parser):
-    """Queries with no date pattern fall through to LLM; mock the LLM call."""
-    with patch("date_parser.httpx.Client") as mock_client_cls:
-        mock_client = MagicMock()
-        mock_client_cls.return_value.__enter__ = MagicMock(return_value=mock_client)
-        mock_client_cls.return_value.__exit__ = MagicMock(return_value=False)
-        mock_resp = MagicMock()
-        mock_resp.json.return_value = {"response": '{"start": null, "end": null}'}
-        mock_resp.raise_for_status = MagicMock()
-        mock_client.post.return_value = mock_resp
+def test_no_date_returns_none(parser):
+    """Queries with no recognisable date pattern return (None, None)."""
+    with patch("date_parser.dateparser") as mock_dp:
+        mock_dp.parse.return_value = None
         s, e = parser.parse("tell me about meetings", TZ)
     assert s is None
     assert e is None
 
 
-# ── LLM fallback ──────────────────────────────────────────────────────────────
+# ── dateparser fallback ───────────────────────────────────────────────────────
 
 @freeze_time(FROZEN)
-def test_llm_fallback_returns_dates(parser):
-    """LLM fallback returns valid ISO dates."""
-    with patch("date_parser.httpx.Client") as mock_client_cls:
-        mock_client = MagicMock()
-        mock_client_cls.return_value.__enter__ = MagicMock(return_value=mock_client)
-        mock_client_cls.return_value.__exit__ = MagicMock(return_value=False)
-        mock_resp = MagicMock()
-        mock_resp.json.return_value = {"response": '{"start": "2025-01-01", "end": "2025-01-15"}'}
-        mock_resp.raise_for_status = MagicMock()
-        mock_client.post.return_value = mock_resp
-        s, e = parser.parse("Q1 notes", TZ)
-    assert s == "2025-01-01"
-    assert e == "2025-01-15"
+def test_dateparser_fallback_returns_date(parser):
+    """dateparser fallback resolves an ambiguous phrase to a point date."""
+    from datetime import date as _date
+    fake_dt = MagicMock()
+    fake_dt.date.return_value = _date(2025, 1, 7)
+    with patch("date_parser.dateparser") as mock_dp:
+        mock_dp.parse.return_value = fake_dt
+        s, e = parser.parse("a few weeks ago", TZ)
+    assert s == "2025-01-07"
+    assert e == "2025-01-07"
 
 
 @freeze_time(FROZEN)
-def test_llm_fallback_swaps_reversed_dates(parser):
-    with patch("date_parser.httpx.Client") as mock_client_cls:
-        mock_client = MagicMock()
-        mock_client_cls.return_value.__enter__ = MagicMock(return_value=mock_client)
-        mock_client_cls.return_value.__exit__ = MagicMock(return_value=False)
-        mock_resp = MagicMock()
-        mock_resp.json.return_value = {"response": '{"start": "2025-01-15", "end": "2025-01-01"}'}
-        mock_resp.raise_for_status = MagicMock()
-        mock_client.post.return_value = mock_resp
-        s, e = parser.parse("Q1 notes", TZ)
-    assert s == "2025-01-01"
-    assert e == "2025-01-15"
-
-
-@freeze_time(FROZEN)
-def test_llm_fallback_invalid_json(parser):
-    """If LLM returns bad JSON, parse() returns (None, None)."""
-    with patch("date_parser.httpx.Client") as mock_client_cls:
-        mock_client = MagicMock()
-        mock_client_cls.return_value.__enter__ = MagicMock(return_value=mock_client)
-        mock_client_cls.return_value.__exit__ = MagicMock(return_value=False)
-        mock_resp = MagicMock()
-        mock_resp.json.return_value = {"response": "not json at all"}
-        mock_resp.raise_for_status = MagicMock()
-        mock_client.post.return_value = mock_resp
-        s, e = parser.parse("Q1 notes", TZ)
+def test_dateparser_fallback_returns_none_when_unparseable(parser):
+    """If dateparser cannot parse the query, returns (None, None)."""
+    with patch("date_parser.dateparser") as mock_dp:
+        mock_dp.parse.return_value = None
+        s, e = parser.parse("xyzzy nonsense", TZ)
     assert s is None
     assert e is None
 
 
 @freeze_time(FROZEN)
-def test_llm_fallback_http_error(parser):
-    """If the LLM call raises, parse() returns (None, None) gracefully."""
-    with patch("date_parser.httpx.Client") as mock_client_cls:
-        mock_client = MagicMock()
-        mock_client_cls.return_value.__enter__ = MagicMock(return_value=mock_client)
-        mock_client_cls.return_value.__exit__ = MagicMock(return_value=False)
-        mock_client.post.side_effect = Exception("connection refused")
-        s, e = parser.parse("Q1 notes", TZ)
-    assert s is None
-    assert e is None
-
-
-@freeze_time(FROZEN)
-def test_llm_fallback_invalid_date_strings(parser):
-    """LLM returns non-ISO date strings — should fall back to (None, None)."""
-    with patch("date_parser.httpx.Client") as mock_client_cls:
-        mock_client = MagicMock()
-        mock_client_cls.return_value.__enter__ = MagicMock(return_value=mock_client)
-        mock_client_cls.return_value.__exit__ = MagicMock(return_value=False)
-        mock_resp = MagicMock()
-        mock_resp.json.return_value = {"response": '{"start": "not-a-date", "end": "also-bad"}'}
-        mock_resp.raise_for_status = MagicMock()
-        mock_client.post.return_value = mock_resp
-        s, e = parser.parse("Q1 notes", TZ)
+def test_dateparser_fallback_exception_returns_none(parser):
+    """If dateparser raises for any reason, parse() returns (None, None) gracefully."""
+    with patch("date_parser.dateparser") as mock_dp:
+        mock_dp.parse.side_effect = Exception("import error")
+        s, e = parser.parse("a few weeks ago", TZ)
     assert s is None
     assert e is None
 

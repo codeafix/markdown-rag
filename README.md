@@ -21,7 +21,7 @@ A containerised RAG stack for your Markdown vault:
    ```
 5. Start chatting:
    ```bash
-   ./chat.sh
+   make chat
    ```
 
 ## Changing models
@@ -57,7 +57,7 @@ curl -X POST http://localhost:8000/query -H "Content-Type: application/json" \
 ```
 
 ## Architecture
-- **rag_server** (`app/rag_server.py`): FastAPI app exposing debug and chat endpoints.
+- **rag_server** (`app/rag_server.py`): FastAPI app exposing search, utility, and chat endpoints.
 - **indexer** (`app/indexer.py`): Loads markdown, splits into chunks, extracts metadata, embeds and upserts to Chroma.
 - **name/date parsing**: `app/name_parser.py`, `app/date_parser.py` detect people terms and date ranges.
 - **watcher** (`app/watcher.py`): Monitors the vault and triggers partial reindex.
@@ -75,13 +75,13 @@ markdown-rag/
     indexer.py           # Indexing pipeline and Chroma access
     md_loader.py         # Markdown loading + wikilink expansion
     name_parser.py       # Name detection (query + indexing)
-    date_parser.py       # Date range parsing (regex + LLM fallback)
+    date_parser.py       # Date range parsing (regex + dateparser fallback)
     watcher.py           # Vault filesystem watcher
     system_prompt.txt    # System prompt used for answering
     run.sh               # Entrypoint used by container
   docker-compose.yml
   Makefile
-  chat.sh               # Simple local chat helper
+  chat.py               # Interactive chat CLI (streaming, think-tag filtering)
   README.md
 ```
 
@@ -103,13 +103,20 @@ markdown-rag/
   - `RAG_URL`, `RAG_FILES_URL` (watcher): endpoints for full and partial reindex (defaults are fine in docker-compose).
 
 ## API Endpoints (selected)
-- `GET /debug/parse-dates?q=...` → parsed `{start,end}`.
-- `GET /debug/retrieve?q=...&k=5` → top-k candidates (no dates in response).
-- `GET /debug/retrieve-dated?q=...&k=5` → candidates with metadata (source, entry_date, people, title, snippet).
+
+### Search
+- `GET /retrieve?q=...&k=5` → top-k candidates from vector search (source, title, entry_date, snippet).
+- `GET /retrieve/dated?q=...&k=5` → top-k candidates with full metadata; response includes `filter` showing the parsed date range that was applied.
+
+### Indexing
 - `POST /reindex` → full incremental reindex.
 - `POST /reindex/scan` → enumerate vault and queue only changed/removed files since last index state, then partial reindex.
 - `POST /reindex/files` → partial reindex of given `{"files": ["path.md", ...]}` relative to the vault.
 - `GET /reindex/status` → last reindex summary.
+
+### Utilities
+- `GET /utils/parse-dates?q=...` → parsed `{start, end}` date range for a query string; useful for verifying date extraction.
+- `POST /utils/split-by-date` → show how a markdown document is split by date headings; POST form field `text` or upload a `file`.
 
 ## Startup indexing
 - On container start, if `REINDEX_ON_START=true`, `app/run.sh` triggers `POST /reindex/scan`.
@@ -156,15 +163,15 @@ markdown-rag/
 | `make reindex-files` | Partial reindex for specific vault-relative paths (prompts for input). |
 | `make reindex-status` | Show last reindex result. |
 
-### Querying / debugging
+### Querying
 
 | Target | Description |
 |--------|-------------|
 | `make ask` | Interactive single question (blocking). |
 | `make ask-stream` | Interactive single question (streaming). |
-| `make debug-retrieve` | Vector search only, no metadata in response. |
-| `make debug-retrieve-dated` | Vector search with full metadata (date, entities, etc.). |
-| `make parse-dates` | Test date parsing on a query. |
+| `make retrieve` | Vector search, returns source/title/date/snippet per result. |
+| `make retrieve-dated` | Vector search with full metadata; shows the date filter that was applied. |
+| `make parse-dates` | Show the parsed date range for a query; useful for verifying date extraction. |
 
 ### Podman machine (macOS)
 
@@ -197,15 +204,15 @@ make test           # run all tests with coverage
 
 ### Coverage
 
-230 tests across 8 files; overall coverage ~93% on `app/` modules:
+222 tests across 8 files; overall coverage ~91% on `app/` modules:
 
 | Module | Coverage |
 |--------|----------|
 | `settings.py`, `md_loader.py` | 100% |
 | `rag_server.py` | 97% |
-| `date_parser.py`, `watcher.py` | 96% |
-| `indexer.py` | 84% |
-| `name_parser.py` | 83% |
+| `watcher.py` | 96% |
+| `date_parser.py` | 93% |
+| `indexer.py`, `name_parser.py` | 83% |
 
 ## Troubleshooting
 - **No results for sentence queries with a name**: ensure your notes have the person name in title, filename, headings, or a parent folder (so it gets into `entities`). Run `make reindex`.

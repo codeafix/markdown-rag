@@ -13,7 +13,7 @@ GENERATOR_MODEL ?= gemma4-26b-q4xl:latest
 EMBED_MODEL     ?= nomic-embed-text
 export GENERATOR_MODEL EMBED_MODEL
 
-.PHONY: up down logs logs-watcher ollama-bootstrap ollama-status reindex reindex-scan reindex-files reindex-status debug-retrieve debug-retrieve-dated parse-dates ask ask-stream chat shell check ps restart machine-start machine-init test-install test
+.PHONY: up down logs logs-watcher ollama-bootstrap ollama-status reindex reindex-scan reindex-files reindex-status retrieve retrieve-dated parse-dates ask ask-stream chat shell check ps restart machine-start machine-init test-install test
 
 up:
 	podman compose -f docker-compose.yml up -d --build
@@ -69,21 +69,21 @@ reindex-files:
 reindex-status:
 	curl -s -X GET http://localhost:8000/reindex/status | jq .
 
-debug-retrieve:
+retrieve:
 	@read -p "Query: " Q; \
-	curl -s -G "http://localhost:8000/debug/retrieve" \
+	curl -s -G "http://localhost:8000/retrieve" \
 	  --data-urlencode "q=$$Q" \
 	  --data-urlencode "k=5" | jq .
 
-debug-retrieve-dated:
+retrieve-dated:
 	@read -p "Query: " Q; \
-	curl -s -G "http://localhost:8000/debug/retrieve-dated" \
+	curl -s -G "http://localhost:8000/retrieve/dated" \
 	  --data-urlencode "q=$$Q" \
 	  --data-urlencode "k=5" | jq .
 
 parse-dates:
 	@read -p "Query: " Q; \
-	curl -s -G "http://localhost:8000/debug/parse-dates" \
+	curl -s -G "http://localhost:8000/utils/parse-dates" \
 	  --data-urlencode "q=$$Q" | jq .
 
 ask:
@@ -99,7 +99,7 @@ ask-stream:
 	  -d "$$(jq -n --arg q "$$Q" '{question:$$q}')" ; echo
 
 chat:
-	bash ./chat.sh
+	.venv/bin/python ./chat.py
 
 shell:
 	podman exec -it markdown-rag bash
