@@ -63,7 +63,7 @@ machine-init:
 	podman machine init --cpus 4 --memory 8192 --disk-size 50
 
 mcp-install:
-	python3 -m venv scripts/.venv
+	.venv/bin/python -m venv scripts/.venv
 	scripts/.venv/bin/pip install -q --upgrade pip
 	scripts/.venv/bin/pip install -q -r scripts/requirements.txt
 
