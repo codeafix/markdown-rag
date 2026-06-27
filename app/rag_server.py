@@ -54,6 +54,7 @@ def retrieve(q: str = FastQuery(...), k: int = 5):
     return [
         {"rank": i+1, "source": d.metadata.get("source"), "title": d.metadata.get("title"),
          "entry_date": d.metadata.get("entry_date"), "entry_date_ts": d.metadata.get("entry_date_ts"),
+         "provenance": d.metadata.get("provenance"),
          "snippet": d.page_content[:800]}
         for i, d in enumerate(docs)
     ]
@@ -121,6 +122,7 @@ def retrieve_dated(q: str = FastQuery(...), k: int = 5):
                 "entry_date_ts": d.metadata.get("entry_date_ts"),
                 "entities": d.metadata.get("entities"),
                 "title": d.metadata.get("title"),
+                "provenance": d.metadata.get("provenance"),
                 "snippet": d.page_content[:800],
             }
             for i, d in enumerate(docs)
