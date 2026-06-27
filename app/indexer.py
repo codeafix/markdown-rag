@@ -1,5 +1,5 @@
 from langchain_chroma import Chroma
-from langchain_ollama.embeddings import OllamaEmbeddings
+from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_text_splitters import MarkdownHeaderTextSplitter, RecursiveCharacterTextSplitter
 from settings import settings
 from md_loader import load_markdown_docs
@@ -217,14 +217,14 @@ def _sanitize_metadata(meta: Dict) -> Dict:
             out[k] = str(v)
     return out
 
-def get_vectorstore() -> Chroma:
-    """Open the persisted Chroma collection with the Ollama embedder."""
-    emb = OllamaEmbeddings(
-        base_url=settings.ollama_base_url,
-        model=settings.embed_model,
-        keep_alive=10,
+def _get_embedder() -> HuggingFaceEmbeddings:
+    return HuggingFaceEmbeddings(
+        model_name=settings.embed_model,
+        model_kwargs={"trust_remote_code": True},
     )
-    return Chroma(persist_directory=settings.index_path, embedding_function=emb)
+
+def get_vectorstore() -> Chroma:
+    return Chroma(persist_directory=settings.index_path, embedding_function=_get_embedder())
 
 def build_index() -> int:
     """Full reindex implemented by delegating to build_index_files over all .md files.
@@ -246,12 +246,7 @@ def build_index() -> int:
     state_files = state.get("files", {})
     removed = [src for src in list(state_files.keys()) if src not in all_files]
     if removed:
-        emb = OllamaEmbeddings(
-            base_url=settings.ollama_base_url,
-            model=settings.embed_model,
-            keep_alive=10,
-        )
-        vs = Chroma(persist_directory=settings.index_path, embedding_function=emb)
+        vs = Chroma(persist_directory=settings.index_path, embedding_function=_get_embedder())
         ids: List[str] = []
         for src in removed:
             prev = state_files.get(src) or {}
@@ -268,12 +263,7 @@ def build_index() -> int:
     return build_index_files(all_files)
 
 def build_index_files(sources: List[str]) -> int:
-    emb = OllamaEmbeddings(
-        base_url=settings.ollama_base_url,
-        model=settings.embed_model,
-        keep_alive=10,
-    )
-    vs = Chroma(persist_directory=settings.index_path, embedding_function=emb)
+    vs = Chroma(persist_directory=settings.index_path, embedding_function=_get_embedder())
 
     state = _load_state()
     state_files = state["files"]

@@ -5,10 +5,11 @@ python-multipart>=0.0.9
 
 # RAG stack
 langchain==0.3.27
-langchain-ollama==0.3.10
+langchain-huggingface>=0.1.0
 langchain-chroma==0.2.6
 chromadb==1.1.1
 langchain-text-splitters==0.3.11
+sentence-transformers>=3.0
 
 # NLP for entity extraction
 spacy>=3.7
@@ -20,8 +21,8 @@ python-frontmatter==1.1.0
 # File watching for auto reindex
 watchdog==5.0.2
 
-# HTTP client
-httpx==0.27.2
+# HTTP client (used by watcher.py)
+requests>=2.31
 
 # Natural-language date parsing (fallback when regex rules don't match)
 dateparser==1.2.0

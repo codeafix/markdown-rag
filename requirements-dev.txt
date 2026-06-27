@@ -1,5 +1,5 @@
 # Test dependencies — heavy app packages (chromadb, spacy, langchain-chroma,
-# langchain-ollama) are stubbed in conftest.py and don't need to be installed.
+# langchain-huggingface) are stubbed in conftest.py and don't need to be installed.
 fastapi==0.114.2
 uvicorn[standard]==0.30.6
 pydantic==2.9.2
@@ -9,7 +9,7 @@ langchain-text-splitters==0.3.11
 markdown-it-py==3.0.0
 python-frontmatter==1.1.0
 watchdog==5.0.2
-httpx>=0.28.1
+dateparser==1.2.0
 pytest==9.0.2
 pytest-cov==7.0.0
 freezegun==1.5.5

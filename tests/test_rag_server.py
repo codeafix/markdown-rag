@@ -1,10 +1,9 @@
 """Tests for app/rag_server.py"""
-import asyncio
 import json
 import os
 import threading
 import pytest
-from unittest.mock import patch, MagicMock, AsyncMock
+from unittest.mock import patch, MagicMock
 from fastapi.testclient import TestClient
 
 import rag_server
@@ -184,124 +183,36 @@ def test_split_by_date_no_input():
     assert "error" in resp.json()
 
 
+def test_split_by_date_file_upload():
+    content = b"## 2025-01-15\n\nMeeting notes here."
+    resp = client.post(
+        "/utils/split-by-date",
+        files={"file": ("note.md", content, "text/markdown")},
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["total_sections"] >= 1
+
+
 # ── /health ───────────────────────────────────────────────────────────────────
 
 def test_health_ok():
     mock_vs = MagicMock()
     mock_vs._embedding_function.embed_query.return_value = [0.1, 0.2]
-
-    with patch("rag_server.get_vectorstore", return_value=mock_vs), \
-         patch("rag_server._generate", new_callable=AsyncMock, return_value="pong"), \
-         patch("httpx.AsyncClient") as mock_httpx:
-        mock_async = AsyncMock()
-        mock_httpx.return_value.__aenter__ = AsyncMock(return_value=mock_async)
-        mock_httpx.return_value.__aexit__ = AsyncMock(return_value=False)
-        mock_resp = MagicMock()
-        mock_resp.raise_for_status = MagicMock()
-        mock_resp.json.return_value = {"version": "0.5.0"}
-        mock_async.get = AsyncMock(return_value=mock_resp)
+    with patch("rag_server.get_vectorstore", return_value=mock_vs):
         resp = client.get("/health")
-
     assert resp.status_code == 200
-    data = resp.json()
-    assert data["ok"] is True
+    assert resp.json()["ok"] is True
 
 
-def test_health_ollama_down():
-    with patch("httpx.AsyncClient") as mock_httpx:
-        mock_async = AsyncMock()
-        mock_httpx.return_value.__aenter__ = AsyncMock(return_value=mock_async)
-        mock_httpx.return_value.__aexit__ = AsyncMock(return_value=False)
-        mock_async.get = AsyncMock(side_effect=Exception("connection refused"))
+def test_health_embeddings_fail():
+    mock_vs = MagicMock()
+    mock_vs._embedding_function.embed_query.side_effect = Exception("no embed model")
+    with patch("rag_server.get_vectorstore", return_value=mock_vs):
         resp = client.get("/health")
-
     assert resp.status_code == 200
-    data = resp.json()
-    assert data["ok"] is False
-    assert "ollama" in data["stage"]
-
-
-# ── /query ────────────────────────────────────────────────────────────────────
-
-def test_query_basic():
-    docs = [_make_doc()]
-    with patch("rag_server._retrieve", return_value=docs), \
-         patch("rag_server._generate", new_callable=AsyncMock, return_value="The answer is here."):
-        resp = client.post("/query", json={"question": "What happened?"})
-
-    assert resp.status_code == 200
-    data = resp.json()
-    assert data["answer"] == "The answer is here."
-    assert "note.md" in data["sources"]
-
-
-def test_query_custom_top_k():
-    docs = [_make_doc()]
-    with patch("rag_server._retrieve", return_value=docs) as mock_retrieve, \
-         patch("rag_server._generate", new_callable=AsyncMock, return_value="answer"):
-        client.post("/query", json={"question": "test", "top_k": 3})
-    mock_retrieve.assert_called_once_with("test", k=3)
-
-
-def test_query_missing_question():
-    resp = client.post("/query", json={})
-    assert resp.status_code == 422
-
-
-# ── /query/stream ─────────────────────────────────────────────────────────────
-
-def test_query_stream():
-    docs = [_make_doc()]
-
-    async def fake_aiter_lines():
-        # Simulate thinking phase followed by content (Ollama /api/chat format)
-        yield '{"message": {"role": "assistant", "content": "", "thinking": "Let me think"}, "done": false}'
-        yield '{"message": {"role": "assistant", "content": "Hello"}, "done": false}'
-        yield '{"message": {"role": "assistant", "content": " world"}, "done": false}'
-        yield '{"message": {"role": "assistant", "content": ""}, "done": true}'
-
-    mock_stream_resp = MagicMock()
-    mock_stream_resp.__aenter__ = AsyncMock(return_value=mock_stream_resp)
-    mock_stream_resp.__aexit__ = AsyncMock(return_value=False)
-    mock_stream_resp.raise_for_status = MagicMock()
-    mock_stream_resp.aiter_lines = fake_aiter_lines
-
-    mock_async_client = MagicMock()
-    mock_async_client.__aenter__ = AsyncMock(return_value=mock_async_client)
-    mock_async_client.__aexit__ = AsyncMock(return_value=False)
-    mock_async_client.stream.return_value = mock_stream_resp
-
-    with patch("rag_server._retrieve", return_value=docs), \
-         patch("httpx.AsyncClient", return_value=mock_async_client):
-        resp = client.post("/query/stream", json={"question": "test"})
-
-    assert resp.status_code == 200
-    # thinking tokens are wrapped in <think>…</think>; content tokens are plain
-    assert "<think>" in resp.text
-    assert "Hello" in resp.text
-    assert " world" in resp.text
-
-
-def test_query_stream_timeout():
-    """ReadTimeout during streaming yields a warning message."""
-    import httpx as _httpx
-    docs = [_make_doc()]
-
-    mock_stream_resp = MagicMock()
-    mock_stream_resp.__aenter__ = AsyncMock(side_effect=_httpx.ReadTimeout("timed out", request=None))
-    mock_stream_resp.__aexit__ = AsyncMock(return_value=False)
-
-    mock_async_client = MagicMock()
-    mock_async_client.__aenter__ = AsyncMock(return_value=mock_async_client)
-    mock_async_client.__aexit__ = AsyncMock(return_value=False)
-    mock_async_client.stream.return_value = mock_stream_resp
-
-    with patch("rag_server._retrieve", return_value=docs), \
-         patch("httpx.AsyncClient", return_value=mock_async_client):
-        resp = client.post("/query/stream", json={"question": "test"})
-
-    assert resp.status_code == 200
-    assert "timed out" in resp.text.lower() or "Warning" in resp.text
+    assert resp.json()["ok"] is False
+    assert resp.json()["stage"] == "embeddings"
 
 
 # ── _retrieve internals ───────────────────────────────────────────────────────
@@ -329,7 +240,6 @@ def test_retrieve_with_date_filter():
          patch("rag_server.extract_name_terms", return_value=[]):
         result = rag_server._retrieve("today notes", k=5)
 
-    # similarity_search should have been called with a where filter
     call_kwargs = mock_vs.similarity_search.call_args
     assert call_kwargs is not None
 
@@ -352,7 +262,6 @@ def test_retrieve_name_filter_no_match_retries():
     non_matching = _make_doc(entities="org:Acme Corp")
     matching = _make_doc(entities="person:Alice Brown")
     mock_vs = MagicMock()
-    # First call returns non-matching, second (retry) returns matching
     mock_vs.similarity_search.side_effect = [[non_matching], [matching]]
 
     with patch("rag_server.get_vectorstore", return_value=mock_vs), \
@@ -374,7 +283,6 @@ def test_retrieve_recency_sort():
          patch("rag_server.extract_name_terms", return_value=[]):
         result = rag_server._retrieve("latest notes", k=5)
 
-    # Newer doc should come first
     assert result[0].page_content == "new"
 
 
@@ -436,7 +344,6 @@ def test_reindex_worker_files_error():
 
 
 def test_reindex_worker_early_exit_if_running():
-    """_reindex_worker returns immediately when _index_running is already True."""
     rag_server._index_running = True
     with patch("rag_server.build_index") as mock_build:
         rag_server._reindex_worker()
@@ -444,7 +351,6 @@ def test_reindex_worker_early_exit_if_running():
 
 
 def test_reindex_worker_files_early_exit_if_running():
-    """_reindex_worker_files returns immediately when _index_running is already True."""
     rag_server._index_running = True
     with patch("rag_server.build_index_files") as mock_build:
         rag_server._reindex_worker_files(["a.md"])
@@ -454,7 +360,6 @@ def test_reindex_worker_files_early_exit_if_running():
 # ── _parse_date_range ─────────────────────────────────────────────────────────
 
 def test_parse_date_range_calls_date_parser():
-    """_parse_date_range is a thin wrapper around DateParser.parse."""
     from freezegun import freeze_time
     with freeze_time("2025-01-15 12:00:00"):
         s, e = rag_server._parse_date_range("today", "Europe/London")
@@ -468,25 +373,6 @@ def test_parse_date_range_no_date():
         s, e = rag_server._parse_date_range("no date here", "Europe/London")
     assert s is None
     assert e is None
-
-
-# ── _generate ─────────────────────────────────────────────────────────────────
-
-def test_generate_calls_ollama():
-    """_generate posts to /api/generate and returns the response field."""
-    mock_resp = MagicMock()
-    mock_resp.raise_for_status = MagicMock()
-    mock_resp.json.return_value = {"response": "generated text"}
-
-    mock_client = AsyncMock()
-    mock_client.post = AsyncMock(return_value=mock_resp)
-
-    with patch("httpx.AsyncClient") as mock_httpx_cls:
-        mock_httpx_cls.return_value.__aenter__ = AsyncMock(return_value=mock_client)
-        mock_httpx_cls.return_value.__aexit__ = AsyncMock(return_value=False)
-        result = asyncio.run(rag_server._generate("test prompt"))
-
-    assert result == "generated text"
 
 
 # ── _list_all_md_files ────────────────────────────────────────────────────────
@@ -599,9 +485,6 @@ def test_retrieve_start_only_date_filter():
         result = rag_server._retrieve("notes after today", k=5)
 
     assert result == [doc]
-    # where filter should have been applied (start only)
-    call_kwargs = mock_vs.similarity_search.call_args
-    assert call_kwargs is not None
 
 
 def test_retrieve_end_only_date_filter():
@@ -643,7 +526,6 @@ def test_retrieve_retry_search_exception_fallback():
          patch("rag_server.extract_name_terms", return_value=["Alice"]):
         result = rag_server._retrieve("Alice notes", k=5)
 
-    # Retry raised; result should be empty
     assert result == []
 
 
@@ -653,7 +535,7 @@ def test_retrieve_entities_non_list_non_string():
     doc.metadata = {
         "source": "note.md", "title": "note",
         "entry_date": "2025-01-15", "entry_date_ts": 1736899200,
-        "entities": 12345,  # integer — neither str nor list
+        "entities": 12345,
     }
     doc.page_content = "content"
     mock_vs = MagicMock()
@@ -664,113 +546,4 @@ def test_retrieve_entities_non_list_non_string():
          patch("rag_server.extract_name_terms", return_value=["Alice"]):
         result = rag_server._retrieve("Alice notes", k=5)
 
-    # No match because entities=12345 → treated as [] → no name hit
     assert doc not in result
-
-
-# ── health check failure modes ────────────────────────────────────────────────
-
-def test_health_embeddings_fail():
-    mock_vs = MagicMock()
-    mock_vs._embedding_function.embed_query.side_effect = Exception("no embed model")
-
-    with patch("rag_server.get_vectorstore", return_value=mock_vs), \
-         patch("httpx.AsyncClient") as mock_httpx:
-        mock_async = AsyncMock()
-        mock_httpx.return_value.__aenter__ = AsyncMock(return_value=mock_async)
-        mock_httpx.return_value.__aexit__ = AsyncMock(return_value=False)
-        mock_resp = MagicMock()
-        mock_resp.raise_for_status = MagicMock()
-        mock_resp.json.return_value = {"version": "0.5.0"}
-        mock_async.get = AsyncMock(return_value=mock_resp)
-        resp = client.get("/health")
-
-    assert resp.status_code == 200
-    assert resp.json()["ok"] is False
-    assert resp.json()["stage"] == "embeddings"
-
-
-def test_health_generate_fail():
-    mock_vs = MagicMock()
-    mock_vs._embedding_function.embed_query.return_value = [0.1]
-
-    with patch("rag_server.get_vectorstore", return_value=mock_vs), \
-         patch("rag_server._generate", new_callable=AsyncMock, side_effect=Exception("generate down")), \
-         patch("httpx.AsyncClient") as mock_httpx:
-        mock_async = AsyncMock()
-        mock_httpx.return_value.__aenter__ = AsyncMock(return_value=mock_async)
-        mock_httpx.return_value.__aexit__ = AsyncMock(return_value=False)
-        mock_resp = MagicMock()
-        mock_resp.raise_for_status = MagicMock()
-        mock_resp.json.return_value = {"version": "0.5.0"}
-        mock_async.get = AsyncMock(return_value=mock_resp)
-        resp = client.get("/health")
-
-    assert resp.status_code == 200
-    assert resp.json()["ok"] is False
-    assert resp.json()["stage"] == "generate"
-
-
-# ── streaming: json decode error passthrough ──────────────────────────────────
-
-def test_query_stream_non_json_line_passthrough():
-    """A non-JSON line in the stream is yielded as-is."""
-    docs = [_make_doc()]
-
-    async def fake_aiter_lines():
-        yield '{"message": {"role": "assistant", "content": "Good "}, "done": false}'
-        yield 'not-json-at-all'
-        yield '{"message": {"role": "assistant", "content": "answer"}, "done": false}'
-
-    mock_stream_resp = MagicMock()
-    mock_stream_resp.__aenter__ = AsyncMock(return_value=mock_stream_resp)
-    mock_stream_resp.__aexit__ = AsyncMock(return_value=False)
-    mock_stream_resp.raise_for_status = MagicMock()
-    mock_stream_resp.aiter_lines = fake_aiter_lines
-
-    mock_async_client = MagicMock()
-    mock_async_client.__aenter__ = AsyncMock(return_value=mock_async_client)
-    mock_async_client.__aexit__ = AsyncMock(return_value=False)
-    mock_async_client.stream.return_value = mock_stream_resp
-
-    with patch("rag_server._retrieve", return_value=docs), \
-         patch("httpx.AsyncClient", return_value=mock_async_client):
-        resp = client.post("/query/stream", json={"question": "test"})
-
-    assert resp.status_code == 200
-    # The non-JSON line should have been passed through as-is
-    assert "not-json-at-all" in resp.text
-
-
-def test_query_stream_general_exception():
-    """A non-ReadTimeout exception yields an error message."""
-    docs = [_make_doc()]
-
-    mock_stream_resp = MagicMock()
-    mock_stream_resp.__aenter__ = AsyncMock(side_effect=Exception("connection reset"))
-    mock_stream_resp.__aexit__ = AsyncMock(return_value=False)
-
-    mock_async_client = MagicMock()
-    mock_async_client.__aenter__ = AsyncMock(return_value=mock_async_client)
-    mock_async_client.__aexit__ = AsyncMock(return_value=False)
-    mock_async_client.stream.return_value = mock_stream_resp
-
-    with patch("rag_server._retrieve", return_value=docs), \
-         patch("httpx.AsyncClient", return_value=mock_async_client):
-        resp = client.post("/query/stream", json={"question": "test"})
-
-    assert resp.status_code == 200
-    assert "Error" in resp.text or "connection reset" in resp.text
-
-
-# ── /utils/split-by-date file upload ─────────────────────────────────────────
-
-def test_split_by_date_file_upload():
-    content = b"## 2025-01-15\n\nMeeting notes here."
-    resp = client.post(
-        "/utils/split-by-date",
-        files={"file": ("note.md", content, "text/markdown")},
-    )
-    assert resp.status_code == 200
-    data = resp.json()
-    assert data["total_sections"] >= 1

@@ -21,10 +21,10 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
           cache: pip
-          cache-dependency-path: requirements-dev.lock
+          cache-dependency-path: requirements-dev.txt
 
       - name: Install dependencies
-        run: pip install -r requirements-dev.lock
+        run: pip install -r requirements-dev.txt
 
       - name: Run tests
-        run: python -m pytest tests/ --cov=app --cov-report=term-missing
+        run: python -m pytest tests/ --cov=app --cov-report=term-missing --cov-fail-under=90

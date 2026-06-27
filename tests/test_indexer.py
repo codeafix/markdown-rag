@@ -303,7 +303,7 @@ def test_get_vectorstore_creates_chroma():
     mock_emb = MagicMock()
     mock_chroma = MagicMock()
 
-    with patch("indexer.OllamaEmbeddings", return_value=mock_emb) as mock_emb_cls, \
+    with patch("indexer.HuggingFaceEmbeddings", return_value=mock_emb) as mock_emb_cls, \
          patch("indexer.Chroma", return_value=mock_chroma) as mock_chroma_cls:
         result = get_vectorstore()
 
@@ -331,7 +331,7 @@ def _mock_vectorstore():
     return vs
 
 
-@patch("indexer.OllamaEmbeddings")
+@patch("indexer.HuggingFaceEmbeddings")
 @patch("indexer.Chroma")
 def test_build_index_files_new_file(mock_chroma_cls, mock_emb_cls, tmp_path):
     mock_vs = _mock_vectorstore()
@@ -348,7 +348,6 @@ def test_build_index_files_new_file(mock_chroma_cls, mock_emb_cls, tmp_path):
         mock_settings.index_path = str(tmp_path)
         mock_settings.chunk_size = 900
         mock_settings.chunk_overlap = 150
-        mock_settings.ollama_base_url = "http://localhost:11434"
         mock_settings.embed_model = "test-embed"
         count = build_index_files(["note.md"])
 
@@ -356,7 +355,7 @@ def test_build_index_files_new_file(mock_chroma_cls, mock_emb_cls, tmp_path):
     assert count >= 0
 
 
-@patch("indexer.OllamaEmbeddings")
+@patch("indexer.HuggingFaceEmbeddings")
 @patch("indexer.Chroma")
 def test_build_index_files_deleted_file(mock_chroma_cls, mock_emb_cls, tmp_path):
     """Files listed but absent from disk have their chunks deleted."""
@@ -377,14 +376,13 @@ def test_build_index_files_deleted_file(mock_chroma_cls, mock_emb_cls, tmp_path)
         mock_settings.index_path = str(tmp_path)
         mock_settings.chunk_size = 900
         mock_settings.chunk_overlap = 150
-        mock_settings.ollama_base_url = "http://localhost:11434"
         mock_settings.embed_model = "test-embed"
         build_index_files(["gone.md"])
 
     mock_vs._collection.delete.assert_called()
 
 
-@patch("indexer.OllamaEmbeddings")
+@patch("indexer.HuggingFaceEmbeddings")
 @patch("indexer.Chroma")
 def test_build_index_files_unchanged_file_skipped(mock_chroma_cls, mock_emb_cls, tmp_path):
     """A file whose mtime matches the stored state is not re-indexed."""
@@ -407,7 +405,6 @@ def test_build_index_files_unchanged_file_skipped(mock_chroma_cls, mock_emb_cls,
         mock_settings.index_path = str(tmp_path)
         mock_settings.chunk_size = 900
         mock_settings.chunk_overlap = 150
-        mock_settings.ollama_base_url = "http://localhost:11434"
         mock_settings.embed_model = "test-embed"
         build_index_files(["note.md"])
 
@@ -432,12 +429,11 @@ def test_build_index_calls_build_index_files(mock_bif, tmp_path):
 
     with patch.object(indexer, "STATE_PATH", state_path), \
          patch("indexer.settings") as mock_settings, \
-         patch("indexer.OllamaEmbeddings"), \
+         patch("indexer.HuggingFaceEmbeddings"), \
          patch("indexer.Chroma") as mock_chroma_cls:
         mock_chroma_cls.return_value = _mock_vectorstore()
         mock_settings.vault_path = str(vault)
         mock_settings.index_path = str(tmp_path)
-        mock_settings.ollama_base_url = "http://localhost:11434"
         mock_settings.embed_model = "test-embed"
         build_index()
 
@@ -467,11 +463,10 @@ def test_build_index_cleans_removed_files(mock_bif, tmp_path):
 
     with patch.object(indexer, "STATE_PATH", state_path), \
          patch("indexer.settings") as mock_settings, \
-         patch("indexer.OllamaEmbeddings"), \
+         patch("indexer.HuggingFaceEmbeddings"), \
          patch("indexer.Chroma", return_value=mock_vs):
         mock_settings.vault_path = str(vault)
         mock_settings.index_path = str(tmp_path)
-        mock_settings.ollama_base_url = "http://localhost:11434"
         mock_settings.embed_model = "test-embed"
         build_index()
 

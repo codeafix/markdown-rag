@@ -5,13 +5,12 @@ from settings import settings
 from date_parser import DateParser
 from indexer import build_index, build_index_files, get_vectorstore
 from fastapi import Query as FastQuery
-from fastapi.responses import StreamingResponse
 from fastapi import Form, UploadFile, File
-from datetime import datetime, timedelta
-from zoneinfo import ZoneInfo
+from fastapi.responses import StreamingResponse
+from datetime import datetime
 from pathlib import Path
 import os
-import httpx, json, re
+import json, re
 
 import threading, time, logging
 
@@ -22,16 +21,13 @@ _last_index = {"ok": False, "started": 0, "finished": 0, "chunks": 0, "error": "
 
 app = FastAPI(title="Markdown RAG")
 
-ISO_DATE = re.compile(r"\b\d{4}-\d{2}-\d{2}\b")
-
 def _parse_date_range(q: str, tz_name: str) -> tuple[str | None, str | None]:
     parser = DateParser()
     s, e = parser.parse(q, tz_name)
     return s, e
 
-class Query(BaseModel):
-    question: str
-    top_k: int | None = None
+class ReindexFiles(BaseModel):
+    files: list[str]
 
 @app.post("/reindex")
 def reindex():
@@ -43,9 +39,6 @@ def reindex():
 @app.get("/reindex/status")
 def reindex_status():
     return {"running": _index_running, "last": _last_index}
-
-class ReindexFiles(BaseModel):
-    files: list[str]
 
 @app.post("/reindex/files")
 def reindex_files(body: ReindexFiles):
@@ -96,30 +89,12 @@ async def split_by_date(
 
 @app.get("/health")
 async def health():
-    # Check Ollama version
-    try:
-        async with httpx.AsyncClient(base_url=settings.ollama_base_url, timeout=10.0) as client:
-            vr = await client.get("/api/version")
-            vr.raise_for_status()
-            version = vr.json().get("version", "unknown")
-    except Exception as e:
-        return {"ok": False, "stage": "ollama/version", "error": str(e)}
-
-    # Check embeddings endpoint by embedding a tiny string via the existing vectorstore
     try:
         vs = get_vectorstore()
-        _ = vs._embedding_function.embed_query("ping")  # forces /api/embeddings
+        _ = vs._embedding_function.embed_query("ping")
     except Exception as e:
         return {"ok": False, "stage": "embeddings", "error": str(e)}
-
-    # Check generate on a minimal prompt
-    try:
-        out = await _generate("Say 'pong' and nothing else.")
-    except Exception as e:
-        return {"ok": False, "stage": "generate", "error": str(e)}
-
-    now = _now_info()
-    return {"ok": True, "ollama_version": version, "now":now, "sample": out[:80]}
+    return {"ok": True}
 
 @app.get("/utils/parse-dates")
 def parse_dates(q: str = FastQuery(...)):
@@ -165,7 +140,6 @@ def _retrieve(q: str, k: int):
     wants_recent = any(w in q.lower() for w in RECENCY_TERMS)
     pool = getattr(settings, "retrieval_pool", 400)
 
-    # Build optional date filter
     def _to_ts(iso: str) -> int:
         return int(datetime.fromisoformat(iso).timestamp())
 
@@ -206,7 +180,6 @@ def _retrieve(q: str, k: int):
             return docs
         return sorted(docs, key=lambda d: (d.metadata or {}).get("entry_date_ts", 0), reverse=True)
 
-    # 1) Similarity search with optional date filter
     try:
         candidates = vs.similarity_search(q_aug, k=pool, filter=where) if where else vs.similarity_search(q_aug, k=pool)
     except Exception as exc:
@@ -214,10 +187,8 @@ def _retrieve(q: str, k: int):
                        "If entry_date_ts is missing from chunks, run make reindex.", exc)
         candidates = vs.similarity_search(q_aug, k=pool)
 
-    # 2) Apply name filter if name terms were found
     worklist = [d for d in candidates if _entities_match(d.metadata or {})] if name_terms else candidates
 
-    # 3) If name filter wiped everything, retry with a name-focused query (no date filter)
     if name_terms and not worklist and not where:
         try:
             sec = vs.similarity_search("Names: " + ", ".join(name_terms), k=pool)
@@ -225,7 +196,6 @@ def _retrieve(q: str, k: int):
             sec = []
         worklist = [d for d in sec if _entities_match(d.metadata or {})]
 
-    # 4) Sort by recency if requested
     worklist = _sort_by_recent(worklist)
 
     return worklist[:k]
@@ -274,10 +244,7 @@ def _load_index_state() -> dict:
     return {"files": {}}
 
 def _scan_changed_files() -> list[str]:
-    """Return vault-relative paths that are new/changed since last state, plus removed ones.
-    Removed paths are included so the indexer can delete their chunks.
-    """
-    # Current files on disk with mtimes
+    """Return vault-relative paths that are new/changed since last state, plus removed ones."""
     vault = Path(settings.vault_path)
     current: dict[str, float] = {}
     for p in vault.rglob("*.md"):
@@ -304,7 +271,6 @@ def _scan_changed_files() -> list[str]:
 
     removed = [rel for rel in state_files.keys() if rel not in current]
 
-    # Union, preserve order with changed first then removed
     seen = set()
     out: list[str] = []
     for rel in changed + removed:
@@ -341,152 +307,3 @@ def _reindex_worker_files(files: list[str]):
         _last_index["finished"] = time.time()
         with _index_lock:
             _index_running = False
-
-async def _generate(prompt: str) -> str:
-    payload = {
-        "model": settings.generator_model,
-        "prompt": prompt,
-        "options": {
-            "temperature": settings.temperature,
-            "num_ctx": settings.num_ctx,
-            "num_predict": settings.num_predict,
-        },
-        "stream": False,
-        "keep_alive": "10m",
-    }
-    async with httpx.AsyncClient(base_url=settings.ollama_base_url, timeout=600) as client:
-        r = await client.post("/api/generate", json=payload)
-        r.raise_for_status()
-        data = r.json()
-        return data.get("response", "")
-
-def _format_context(docs):
-    blocks = []
-    for i, d in enumerate(docs, 1):
-        meta = d.metadata or {}
-        src = meta.get("source", "unknown.md")
-        title = meta.get("title")
-        entry_date = meta.get("entry_date")
-        tags = meta.get("tags")
-        extras = []
-        if entry_date: extras.append(f"date={entry_date}")
-        if title: extras.append(f"title={title}")
-        if tags: extras.append(f"tags={tags}")
-        header = f"[{i}] ({src})" + (f" {'; '.join(extras)}" if extras else "")
-        blocks.append(f"{header}\n{d.page_content}")
-    return "\n\n".join(blocks)
-
-def _sources_legend(docs):
-    lines = []
-    for i, d in enumerate(docs, 1):
-        meta = d.metadata or {}
-        src = meta.get("source", "unknown.md")
-        title = meta.get("title")
-        entry_date = meta.get("entry_date")
-        suffix = f" — {title}" if title else ""
-        if entry_date:
-            suffix += f" — {entry_date}"
-        lines.append(f"[{i}] {src}{suffix}")
-    return "\n".join(lines)
-
-def _now_info():
-    tz = ZoneInfo(settings.timezone)
-    now = datetime.now(tz)
-    # e.g., 2025-10-11, Saturday, 13:45
-    return {
-        "iso_date": now.date().isoformat(),
-        "weekday": now.strftime("%A"),
-        "time_24h": now.strftime("%H:%M"),
-        "tz": settings.timezone,
-    }
-
-def _final_prompt(question: str, docs) -> str:
-    context = _format_context(docs)
-    sys = settings.system_prompt()
-    legend = _sources_legend(docs)
-    now = _now_info()
-    return f"""{sys}
-Question:
-{question}
-
-Context:
-Current date/time: {now['iso_date']} ({now['weekday']}) {now['time_24h']} [{now['tz']}]
-{context}
-
-Sources (use these numbers for citations):
-{legend}
-Answer:"""
-
-@app.post("/query")
-async def query(q: Query):
-    k = q.top_k or settings.top_k
-    docs = _retrieve(q.question, k=k)
-    prompt = _final_prompt(q.question, docs)
-    answer = await _generate(prompt)
-    cites = [d.metadata.get("source","unknown.md") for d in docs]
-    return {"answer": answer, "sources": cites}
-
-@app.post("/query/stream")
-async def query_stream(q: Query):
-    k = q.top_k or settings.top_k
-    docs = _retrieve(q.question, k=k)
-    prompt = _final_prompt(q.question, docs)
-
-    # IMPORTANT: set all four timeout params explicitly
-    timeout = httpx.Timeout(connect=10.0, read=600.0, write=600.0, pool=10.0)
-
-    payload = {
-        "model": settings.generator_model,
-        "messages": [
-            {"role": "user", "content": prompt}
-        ],
-        "options": {
-            "temperature": settings.temperature,
-            "num_ctx": settings.num_ctx,
-            "num_predict": settings.num_predict,
-        },
-        "stream": True,
-        "keep_alive": "10m",
-    }
-
-    async def gen():
-        thinking_open = False  # tracks whether we've opened a <think> block
-        try:
-            async with httpx.AsyncClient(base_url=settings.ollama_base_url, timeout=timeout) as client:
-                async with client.stream("POST", "/api/chat", json=payload) as r:
-                    r.raise_for_status()
-                    async for line in r.aiter_lines():
-                        if not line:
-                            continue
-                        # Ollama streams one JSON object per line
-                        try:
-                            obj = json.loads(line)
-                            msg = obj.get("message", {})
-                            thinking = msg.get("thinking")
-                            content = msg.get("content")
-                            # Wrap thinking tokens in <think>…</think> so callers
-                            # can strip or display them; open/close tags emitted once.
-                            if thinking:
-                                if not thinking_open:
-                                    yield "<think>"
-                                    thinking_open = True
-                                yield thinking
-                            else:
-                                if thinking_open:
-                                    yield "</think>\n"
-                                    thinking_open = False
-                                if content:
-                                    yield content
-                        except json.JSONDecodeError:
-                            yield line
-            if thinking_open:
-                yield "</think>\n"
-        except httpx.ReadTimeout:
-            yield "\n\n[Warning] generation timed out; partial output shown.\n"
-        except Exception as e:
-            yield f"\n\n[Error] streaming failed: {e}\n"
-
-        # ensure newline at end for a clean terminal cursor
-        yield "\n"
-
-    return StreamingResponse(gen(), media_type="text/plain; charset=utf-8")

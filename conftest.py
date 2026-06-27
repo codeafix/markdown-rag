@@ -4,17 +4,13 @@ import sys
 from unittest.mock import MagicMock
 
 # ── env vars (must be set before settings.py is imported) ────────────────────
-_APP_DIR = os.path.join(os.path.dirname(__file__), "app")
-os.environ.setdefault("SYSTEM_PROMPT_FILE", os.path.join(_APP_DIR, "system_prompt.txt"))
 os.environ.setdefault("VAULT_PATH", "/tmp/test-vault")
 os.environ.setdefault("INDEX_PATH", "/tmp/test-index")
-os.environ.setdefault("OLLAMA_BASE_URL", "http://localhost:11434")
-os.environ.setdefault("GENERATOR_MODEL", "test-model")
-os.environ.setdefault("EMBED_MODEL", "test-embed")
+os.environ.setdefault("EMBED_MODEL", "test-embed-model")
 
 # ── stub infrastructure packages ─────────────────────────────────────────────
 # Several packages use pydantic v1 native extensions that are incompatible with
-# Python 3.14 (chromadb, spacy). Unit tests mock these dependencies anyway.
+# Python ≥ 3.14 (chromadb, spacy). Unit tests mock these dependencies anyway.
 _STUBS = [
     "chromadb",
     "chromadb.api",
@@ -22,8 +18,7 @@ _STUBS = [
     "chromadb.config",
     "langchain_chroma",
     "langchain_chroma.vectorstores",
-    "langchain_ollama",
-    "langchain_ollama.embeddings",
+    "langchain_huggingface",
     # spacy native extensions break on py3.14; name_parser lazy-loads it
     "spacy",
     # langchain_text_splitters imports SpacyTextSplitter which triggers spacy
