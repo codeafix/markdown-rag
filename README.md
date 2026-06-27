@@ -1,71 +1,43 @@
 # Markdown RAG
 
-A containerised RAG stack for your Markdown vault:
-- Indexes Markdown with **Markdown-header splitting** first, then **sentence-aware fallback**, and finally **char-based** fallback.
+A containerised semantic search stack for your Markdown vault:
+- Indexes Markdown with **date-heading split**, then **Markdown-header splitting**, then **sentence-aware** and **char-based** fallbacks.
 - Persists embeddings in **Chroma**.
-- Uses **Ollama** for both generator (**Gemma 4 26B Q4**) and embedder (**nomic-embed-text**).
-- Ollama runs **on the host** (Metal GPU on macOS) for faster inference and embedding; the containers talk to it via `host.containers.internal`.
+- Embeddings run **inside the container** via `sentence-transformers` (`nomic-ai/nomic-embed-text-v1.5` by default) — no Ollama required.
 - **Watchdog** sidecar auto-reindexes on vault changes (debounced).
+- **MCP server** (`scripts/mcp_stdio.py`) exposes semantic search tools to AI assistants.
 
 ## Quick start
 
-1. Install and start [Ollama](https://ollama.com) on your host machine (it must be running before the stack starts).
-2. Pull the required models:
-   ```bash
-   make ollama-bootstrap
-   ```
-3. Edit `.env` and set `HOST_VAULT_PATH` to your Markdown vault absolute path.
-4. Start the stack:
+1. Edit `.env` and set `HOST_VAULT_PATH` to your Markdown vault absolute path.
+2. Start the stack:
    ```bash
    make up
    ```
-5. Start chatting:
+3. Search the vault:
    ```bash
-   make chat
+   make retrieve-dated
    ```
 
-## Changing models
-
-Model names are defined as variables at the top of the `Makefile`:
-
-```makefile
-GENERATOR_MODEL ?= gemma4-26b-q4xl:latest
-EMBED_MODEL     ?= nomic-embed-text
-```
-
-To switch models, override them on the command line — no file edits required:
-
-```bash
-# Pull and verify the new models first
-make ollama-bootstrap GENERATOR_MODEL=llama3.2:latest
-
-# Then start the stack with the same override
-make up GENERATOR_MODEL=llama3.2:latest
-```
-
-The values are exported from Make and picked up by `docker-compose.yml` as environment variables.  If you want a permanent change, edit the two lines in `Makefile` directly.
-
-> **Note:** changing `EMBED_MODEL` requires a full reindex (`make reindex`) because
-> the new embedding model will produce incompatible vectors.
-
 ## Manual calls
-- Reindex: `make reindex` (also happens on startup, and on changes via watcher)
+- Reindex: `make reindex` (also happens on startup and on file changes via watcher)
 - Query:
 ```bash
-curl -X POST http://localhost:8000/query -H "Content-Type: application/json" \
-  -d '{"question":"Where is the incident runbook?"}'
+curl -s -G "http://localhost:8000/retrieve/dated" \
+  --data-urlencode "q=What did I write about project X last month?" \
+  --data-urlencode "k=5" | jq .
 ```
 
 ## Architecture
-- **rag_server** (`app/rag_server.py`): FastAPI app exposing search, utility, and chat endpoints.
+- **rag_server** (`app/rag_server.py`): FastAPI app exposing search and utility endpoints.
 - **indexer** (`app/indexer.py`): Loads markdown, splits into chunks, extracts metadata, embeds and upserts to Chroma.
 - **name/date parsing**: `app/name_parser.py`, `app/date_parser.py` detect people terms and date ranges.
 - **watcher** (`app/watcher.py`): Monitors the vault and triggers partial reindex.
-- **models**: Served by Ollama on the host machine.
+- **MCP server** (`scripts/mcp_stdio.py`): `fastmcp`-based stdio server exposing vault search tools.
 
 Data flow (high-level):
 1. Markdown file changes → watcher posts changed paths → indexer extracts metadata and chunks → Chroma upsert.
-2. Query arrives → server parses date/name hints → vector search (augmented) → filter by date → filter by people → optional recent sort → generate answer with citations.
+2. Query arrives → server parses date/name hints → vector search (augmented) → filter by date → filter by people → optional recent sort → return ranked results.
 
 ## Directory layout
 ```
@@ -76,31 +48,48 @@ markdown-rag/
     md_loader.py         # Markdown loading + wikilink expansion
     name_parser.py       # Name detection (query + indexing)
     date_parser.py       # Date range parsing (regex + dateparser fallback)
+    settings.py          # Config via env vars
     watcher.py           # Vault filesystem watcher
-    system_prompt.txt    # System prompt used for answering
     run.sh               # Entrypoint used by container
+  scripts/
+    mcp_stdio.py         # MCP stdio server (search_vault, search_memory)
+    requirements.txt     # MCP server dependencies
   docker-compose.yml
   Makefile
-  chat.py               # Interactive chat CLI (streaming, think-tag filtering)
   README.md
 ```
 
 ## Configuration
 - **.env** (used by docker-compose):
   - `HOST_VAULT_PATH`: absolute path to your markdown vault on the host.
-- **Makefile variables** (source of truth for model names):
-  - `GENERATOR_MODEL`: LLM used for answering (default `gemma4-26b-q4xl:latest`).
-  - `EMBED_MODEL`: embedding model (default `nomic-embed-text`).
 - **Settings** (`app/settings.py`):
-  - `index_path`: Chroma persistence directory.
-  - `vault_path`: container path for mounted vault.
-  - `timezone`: used for date parsing and display.
+  - `EMBED_MODEL`: embedding model name (default `nomic-ai/nomic-embed-text-v1.5`).
+  - `INDEX_PATH`: Chroma persistence directory (default `/index/chroma`).
+  - `VAULT_PATH`: container path for mounted vault (default `/vault`).
+  - `CHUNK_SIZE` / `CHUNK_OVERLAP`: chunking parameters (defaults 900 / 150).
+  - `RETRIEVAL_POOL`: pool size before name/recency filtering (default 400).
+  - `TIMEZONE`: used for date parsing and display (default `Europe/London`).
 
 - **Container env (docker-compose.yml)**:
-  - `OLLAMA_BASE_URL`: points to `http://host.containers.internal:11434` so containers reach host Ollama.
-  - `REINDEX_ON_START`: when `true`, `app/run.sh` calls `POST /reindex/scan` after the API boots to enqueue only changed/removed files since the last index state.
-  - `WATCH_PATH`, `WATCH_DEBOUNCE_SECS`: tune watcher behavior.
-  - `RAG_URL`, `RAG_FILES_URL` (watcher): endpoints for full and partial reindex (defaults are fine in docker-compose).
+  - `REINDEX_ON_START`: when `true`, `app/run.sh` calls `POST /reindex/scan` after the API boots.
+  - `WATCH_DEBOUNCE_SECS`: tune watcher debounce (default 3s).
+
+## MCP server
+
+`scripts/mcp_stdio.py` is a **fastmcp** stdio server that exposes two tools:
+
+- `search_vault(question, top_k)` — semantic search over the entire vault via `/retrieve/dated`; automatically applies date and name filters when detected in the question.
+- `search_memory(question, top_k, folder)` — same search scoped to a specific vault folder (e.g. an agent memory folder), filtered by source path prefix.
+
+**Env vars** (set in the MCP client config):
+- `RAG_URL` — base URL for the running RAG API (default: `http://localhost:8000`)
+- `MEMORY_FOLDER` — vault folder prefix used by `search_memory` (default: `Claude`)
+
+**Install and run:**
+```bash
+make mcp-install        # creates scripts/.venv and installs fastmcp + httpx
+scripts/.venv/bin/python scripts/mcp_stdio.py
+```
 
 ## API Endpoints (selected)
 
@@ -115,7 +104,7 @@ markdown-rag/
 - `GET /reindex/status` → last reindex summary.
 
 ### Utilities
-- `GET /utils/parse-dates?q=...` → parsed `{start, end}` date range for a query string; useful for verifying date extraction.
+- `GET /utils/parse-dates?q=...` → parsed `{start, end}` date range for a query string.
 - `POST /utils/split-by-date` → show how a markdown document is split by date headings; POST form field `text` or upload a `file`.
 
 ## Startup indexing
@@ -123,24 +112,13 @@ markdown-rag/
 - The scan compares current vault mtimes vs `index_state.json` and queues only changed/removed files, then calls the same partial reindex worker path the watcher uses.
 
 ## Indexing & retrieval behavior
-- **Chunking**: header → sentence → char fallbacks to produce readable chunks.
-- **Metadata stored**: `title`, `source`, `entry_date` (from date headings, frontmatter `date` field, or file mtime — in that priority order), `tags` (from frontmatter), `entities` (derived from title, filename, headings, and parent folders). Vector store metadata is sanitized to primitives.
+- **Chunking**: date-heading → header → sentence → char fallbacks to produce readable chunks.
+- **Metadata stored**: `title`, `source`, `entry_date` (from date headings, frontmatter `date` field, or file mtime — in that priority order), `tags` (from frontmatter), `entities` (spaCy NER from text; PERSON, ORG, GPE, WORK_OF_ART). Vector store metadata is sanitized to primitives.
 - **Embeddings include metadata**: Each chunk text is prefixed with `[title] [entities] [source] [date] [tags]` to strengthen relevance in vector search.
-- **Dates**:
-  - Query rules like "today", "last 2 weeks", or explicit ranges parsed by `date_parser.py`.
-  - Retrieval filters strictly by date when a concrete window is parsed; otherwise a name-only fallback is used to avoid empty results.
-- **People**:
-  - Names are extracted from queries (quotes/multi-word preferred; common non-name tokens filtered out).
-  - Retrieval requires all detected names to match `metadata.entities` (or title/source) when any names are found.
+- **Dates**: Query rules like "today", "last 2 weeks", or explicit ranges parsed by `date_parser.py`. Retrieval filters strictly by date when a concrete window is parsed.
+- **People**: Names extracted from queries (quotes/multi-word preferred; common non-name tokens filtered out). Retrieval requires all detected names to match `metadata.entities` when any names are found.
 
 ## Make targets
-
-### Ollama (host)
-
-| Target | Description |
-|--------|-------------|
-| `make ollama-bootstrap` | Pull `GENERATOR_MODEL` and `EMBED_MODEL` to the host Ollama. Safe to re-run — `ollama pull` skips models that are already current. Run this before first `make up` and whenever you change model names. |
-| `make ollama-status` | Show host Ollama version and list all pulled models alongside the model names required by the stack. |
 
 ### Stack
 
@@ -167,11 +145,15 @@ markdown-rag/
 
 | Target | Description |
 |--------|-------------|
-| `make ask` | Interactive single question (blocking). |
-| `make ask-stream` | Interactive single question (streaming). |
 | `make retrieve` | Vector search, returns source/title/date/snippet per result. |
 | `make retrieve-dated` | Vector search with full metadata; shows the date filter that was applied. |
 | `make parse-dates` | Show the parsed date range for a query; useful for verifying date extraction. |
+
+### MCP
+
+| Target | Description |
+|--------|-------------|
+| `make mcp-install` | Create `scripts/.venv` and install MCP server dependencies. |
 
 ### Podman machine (macOS)
 
@@ -192,7 +174,7 @@ markdown-rag/
 Tests run **locally** (no container required) against the `app/` source tree.
 
 ```bash
-make test-install   # one-time setup: creates .venv, installs requirements-dev.txt
+make test-install   # one-time setup: creates .venv, installs requirements-dev.lock
 make test           # run all tests with coverage
 ```
 
@@ -200,31 +182,24 @@ make test           # run all tests with coverage
 
 - **`requirements-dev.txt`** — extends `app/requirements.txt` with `pytest`, `pytest-cov`, and `freezegun`.
 - **`pytest.ini`** — sets `testpaths = tests` and `pythonpath = app` so all `app/` modules are importable without a package prefix.
-- **`conftest.py`** — stubs `chromadb`, `spacy`, `langchain_chroma`, and `langchain_ollama` via `sys.modules` before any test module is imported. These use pydantic v1 native extensions that are incompatible with Python ≥ 3.14.
+- **`conftest.py`** — stubs `chromadb`, `spacy`, `langchain_chroma`, and `langchain_ollama` via `sys.modules` before any test module is imported. These use pydantic v1 native extensions incompatible with Python ≥ 3.14.
 
 ### Coverage
 
-222 tests across 8 files; overall coverage ~91% on `app/` modules:
-
-| Module | Coverage |
-|--------|----------|
-| `settings.py`, `md_loader.py` | 100% |
-| `rag_server.py` | 97% |
-| `watcher.py` | 96% |
-| `date_parser.py` | 93% |
-| `indexer.py`, `name_parser.py` | 83% |
+209 tests; overall coverage ~91% on `app/` modules.
 
 ## Troubleshooting
 - **No results for sentence queries with a name**: ensure your notes have the person name in title, filename, headings, or a parent folder (so it gets into `entities`). Run `make reindex`.
 - **List-valued metadata error**: we sanitize metadata to primitives; if you changed metadata shapes, re-run `make reindex`.
-- **Ollama not reachable**: ensure `ollama serve` is running on the host before `make up`. Verify with `make ollama-status`.
-- **Wrong model loaded**: the stack reads `GENERATOR_MODEL` / `EMBED_MODEL` at container start. If you changed them, run `make down && make up GENERATOR_MODEL=<new>`.
 - **Embedding model changed**: requires a full reindex — vectors from different embedding models are incompatible. Run `make reindex` after switching `EMBED_MODEL`.
+- **Stale chunks after schema change**: run `make reindex` — old Chroma chunks retain the old metadata shape.
 
 ## Watcher behavior
 - The watcher debounces file events and calls `POST /reindex/files` with exact changed paths.
 - If partial reindex fails, it falls back to `POST /reindex` (full) to self-heal.
 
 ## Notes
+- Uses **Podman** (not Docker) via `podman compose`.
 - The loader **ignores** `.obsidian/` and expands `[[wikilinks]]` to their alias or target text.
-- Citations include front-matter fields when present (e.g., `title`, `tags`).
+- Chroma persistence is automatic (`PersistentClient`); do not call `.persist()` explicitly.
+- `entry_date_ts` was added later; a full reindex is needed on existing installations to backfill it.
